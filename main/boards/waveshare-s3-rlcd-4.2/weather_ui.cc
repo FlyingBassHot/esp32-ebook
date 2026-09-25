@@ -86,6 +86,24 @@ void CustomLcdDisplay::SetupWeatherUI() {
     lv_obj_set_style_text_color(battery_pct_label_, lv_color_black(), 0);
     lv_label_set_text(battery_pct_label_, "---%");
 
+    // ===== 阅读器入口胶囊（状态胶囊左侧，视觉入口）=====
+    // 屏幕不支持触摸，实际进入方式：USER 键循环到阅读页 / 语音"打开阅读页"
+    lv_obj_t *reader_entry = lv_obj_create(screen);
+    lv_obj_set_size(reader_entry, 64, 28);
+    lv_obj_set_style_bg_opa(reader_entry, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(reader_entry, lv_color_white(), 0);
+    lv_obj_set_style_border_width(reader_entry, 0, 0);
+    lv_obj_set_style_radius(reader_entry, 14, 0);
+    lv_obj_align(reader_entry, LV_ALIGN_TOP_RIGHT, -(8 + 115 + 6), 4);
+    lv_obj_set_style_pad_all(reader_entry, 0, 0);
+    lv_obj_remove_flag(reader_entry, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(reader_entry, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(reader_entry, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_t *reader_entry_label = lv_label_create(reader_entry);
+    lv_obj_set_style_text_font(reader_entry_label, font_small, 0);
+    lv_obj_set_style_text_color(reader_entry_label, lv_color_black(), 0);
+    lv_label_set_text(reader_entry_label, "读书");
+
     // ===== 左上角温湿度（白字，直接在黑底上）=====
     sensor_label_ = lv_label_create(screen);
     lv_obj_set_style_text_font(sensor_label_, font_small, 0);

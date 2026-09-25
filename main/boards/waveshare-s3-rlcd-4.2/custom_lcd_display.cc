@@ -11,7 +11,10 @@
 //   rlcd_driver.cc        - RLCD 硬件驱动
 //   weather_ui.cc          - 天气站 UI 布局
 //   music_ui.cc            - 音乐页 UI 布局
+//   pomodoro_ui.cc         - 番茄钟 UI 布局
+//   reader_ui.cc           - 阅读页 UI 布局
 //   data_update_task.cc    - 后台数据更新任务
+//   managers/reader_manager.cc - 电子书（扫描/编码/章节/分页/进度）
 
 #include <vector>
 #include <string>
@@ -93,11 +96,12 @@ CustomLcdDisplay::CustomLcdDisplay(esp_lcd_panel_io_handle_t panel_io,
         return;
     }
 
-    // 4. 创建天气页 + 音乐页 + 番茄钟页 UI
-    ESP_LOGI(TAG, "创建天气页 + 音乐页 + 番茄钟页 UI");
+    // 4. 创建天气页 + 音乐页 + 番茄钟页 + 阅读页 UI
+    ESP_LOGI(TAG, "创建天气页 + 音乐页 + 番茄钟页 + 阅读页 UI");
     SetupWeatherUI();
     SetupMusicUI();
     SetupPomodoroUI();
+    SetupReaderUI();
     // 告诉显示框架：当前自定义 UI 已经初始化完成
     // 否则基类的 SetStatus/ShowNotification 会一直误判为“UI 未准备好”
     setup_ui_called_ = true;
@@ -239,6 +243,11 @@ void CustomLcdDisplay::SetChatMessage(const char* role, const char* content) {
         lv_label_set_long_mode(pomo_chat_status_label_, LV_LABEL_LONG_WRAP);
         lv_label_set_text(pomo_chat_status_label_, content);
     }
+    // 阅读页同步显示 AI 文案
+    if (reader_chat_status_label_) {
+        lv_label_set_long_mode(reader_chat_status_label_, LV_LABEL_LONG_WRAP);
+        lv_label_set_text(reader_chat_status_label_, content);
+    }
 }
 
 void CustomLcdDisplay::SetEmotion(const char* emotion) {
@@ -283,6 +292,9 @@ void CustomLcdDisplay::SetEmotion(const char* emotion) {
     if (pomo_emotion_label_) {
         lv_label_set_text(pomo_emotion_label_, text);
     }
+    if (reader_emotion_label_) {
+        lv_label_set_text(reader_emotion_label_, text);
+    }
     
     // 2. 尝试加载小智自带的 emoji 图片（天气页 + 音乐页 + 番茄钟页同步更新）
     if (current_theme_) {
@@ -317,6 +329,15 @@ void CustomLcdDisplay::SetEmotion(const char* emotion) {
                 lv_obj_add_flag(pomo_emotion_img_, LV_OBJ_FLAG_HIDDEN);
             }
         }
+        // 阅读页 emoji
+        if (reader_emotion_img_) {
+            if (has_image) {
+                lv_image_set_src(reader_emotion_img_, image->image_dsc());
+                lv_obj_remove_flag(reader_emotion_img_, LV_OBJ_FLAG_HIDDEN);
+            } else {
+                lv_obj_add_flag(reader_emotion_img_, LV_OBJ_FLAG_HIDDEN);
+            }
+        }
     }
 }
 
@@ -325,6 +346,7 @@ void CustomLcdDisplay::ClearChatMessages() {
     if (chat_status_label_) lv_label_set_text(chat_status_label_, "");
     if (music_chat_status_label_) lv_label_set_text(music_chat_status_label_, "");
     if (pomo_chat_status_label_) lv_label_set_text(pomo_chat_status_label_, "");
+    if (reader_chat_status_label_) lv_label_set_text(reader_chat_status_label_, "");
     // 表情不清除，保持常驻
 }
 
@@ -353,6 +375,7 @@ void CustomLcdDisplay::ApplyDisplayMode() {
     if (weather_page_) lv_obj_add_flag(weather_page_, LV_OBJ_FLAG_HIDDEN);
     if (music_page_) lv_obj_add_flag(music_page_, LV_OBJ_FLAG_HIDDEN);
     if (pomodoro_page_) lv_obj_add_flag(pomodoro_page_, LV_OBJ_FLAG_HIDDEN);
+    if (reader_page_) lv_obj_add_flag(reader_page_, LV_OBJ_FLAG_HIDDEN);
 
     // 显示当前页面
     switch (display_mode_) {
@@ -365,16 +388,22 @@ void CustomLcdDisplay::ApplyDisplayMode() {
         case MODE_POMODORO:
             if (pomodoro_page_) lv_obj_remove_flag(pomodoro_page_, LV_OBJ_FLAG_HIDDEN);
             break;
+        case MODE_READER:
+            if (reader_page_) lv_obj_remove_flag(reader_page_, LV_OBJ_FLAG_HIDDEN);
+            // 首次进入阅读页时懒加载书籍（扫描/转码/分页，一次性开销）
+            ReaderEnsureLoaded();
+            break;
     }
 }
 
 void CustomLcdDisplay::CycleDisplayMode() {
     DisplayLockGuard lock(this);
-    // 三页循环：天气 → 音乐 → 番茄钟 → 天气
+    // 四页循环：天气 → 音乐 → 番茄钟 → 阅读 → 天气
     switch (display_mode_) {
         case MODE_WEATHER:  display_mode_ = MODE_MUSIC; break;
         case MODE_MUSIC:    display_mode_ = MODE_POMODORO; break;
-        case MODE_POMODORO: display_mode_ = MODE_WEATHER; break;
+        case MODE_POMODORO: display_mode_ = MODE_READER; break;
+        case MODE_READER:   display_mode_ = MODE_WEATHER; break;
     }
     ApplyDisplayMode();
     const char* name = "未知";
@@ -382,6 +411,7 @@ void CustomLcdDisplay::CycleDisplayMode() {
         case MODE_WEATHER:  name = "天气页"; break;
         case MODE_MUSIC:    name = "音乐页"; break;
         case MODE_POMODORO: name = "番茄钟"; break;
+        case MODE_READER:   name = "阅读页"; break;
     }
     ESP_LOGI(TAG, "页面切换: %s", name);
 }

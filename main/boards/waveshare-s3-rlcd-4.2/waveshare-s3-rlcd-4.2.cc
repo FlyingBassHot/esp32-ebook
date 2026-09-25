@@ -32,7 +32,7 @@ private:
     i2c_master_bus_handle_t i2c_bus_;
     Button boot_button_;
     Button user_button_;  // GPIO18 用户按键
-    CustomLcdDisplay *display_;
+    CustomLcdDisplay *display_ = nullptr;
     adc_oneshot_unit_handle_t adc1_handle;
     adc_cali_handle_t cali_handle;
 
@@ -103,24 +103,39 @@ private:
         });
 
         // USER 按钮（GPIO18）- 辅助功能按键
+        // 阅读模式下：单击=下一页 / 双击=上一章 / 长按=下一章
+        // 其他模式：单击=切页 / 双击=刷新数据 / 长按=系统信息
         user_button_.OnClick([this]() {
             if (display_) display_->NotifyUserActivity();  // 记录用户活动
-            if (display_) {
+            if (!display_) return;
+            if (display_->IsReaderMode()) {
+                display_->ReaderNextPage();
+            } else {
                 display_->CycleDisplayMode();
+                ESP_LOGI(TAG, "USER 按钮单击：切换页面");
             }
-            ESP_LOGI(TAG, "USER 按钮单击：切换天气页/音乐页");
         });
 
         user_button_.OnDoubleClick([this]() {
             if (display_) display_->NotifyUserActivity();  // 记录用户活动
-            // 双击：刷新所有数据（天气、传感器、时间）
-            RefreshAllData();
+            if (display_ && display_->IsReaderMode()) {
+                display_->ReaderPrevChapter();
+                ESP_LOGI(TAG, "USER 按钮双击：上一章");
+            } else {
+                // 双击：刷新所有数据（天气、传感器、时间）
+                RefreshAllData();
+            }
         });
 
         user_button_.OnLongPress([this]() {
             if (display_) display_->NotifyUserActivity();  // 记录用户活动
-            // 长按：显示系统信息
-            ShowSystemInfo();
+            if (display_ && display_->IsReaderMode()) {
+                display_->ReaderNextChapter();
+                ESP_LOGI(TAG, "USER 按钮长按：下一章");
+            } else {
+                // 长按：显示系统信息
+                ShowSystemInfo();
+            }
         });
     }
 
@@ -349,10 +364,10 @@ private:
         // ===== 屏幕切换工具（语音可调用）=====
         mcp_server.AddTool(
             "self.disp.switch",
-            "Switch display page between weather, music, and pomodoro.\n"
-            "Use when user says: '切到音乐页', '打开天气页', '切换屏幕', '打开番茄钟页面', 'switch screen'.\n"
+            "Switch display page between weather, music, pomodoro, and reader.\n"
+            "Use when user says: '切到音乐页', '打开天气页', '切换屏幕', '打开番茄钟页面', '打开阅读页', '看书', 'switch screen'.\n"
             "Args:\n"
-            "  `mode`: 'toggle' | 'music' | 'weather' | 'pomodoro' (default: 'toggle')",
+            "  `mode`: 'toggle' | 'music' | 'weather' | 'pomodoro' | 'reader' (default: 'toggle')",
             PropertyList({
                 Property("mode", kPropertyTypeString, std::string("toggle"))
             }),
@@ -380,10 +395,13 @@ private:
                     display_->SwitchToWeatherPage();
                 } else if (mode == "pomodoro") {
                     display_->SwitchToPomodoroPage();
+                } else if (mode == "reader") {
+                    display_->SwitchToReaderPage();
                 } else {
-                    return std::string("参数 mode 无效，请使用 toggle/music/weather/pomodoro");
+                    return std::string("参数 mode 无效，请使用 toggle/music/weather/pomodoro/reader");
                 }
 
+                if (display_->IsReaderMode()) return std::string("已切换到阅读页");
                 if (display_->IsMusicMode()) return std::string("已切换到音乐页");
                 if (display_->IsPomodoroMode()) return std::string("已切换到番茄钟页");
                 return std::string("已切换到天气页");

@@ -372,6 +372,9 @@ void CustomLcdDisplay::DataUpdateTask(void *arg) {
                         if (self->pomo_battery_icon_img_) {
                             lv_image_set_src(self->pomo_battery_icon_img_, icon_src);
                         }
+                        if (self->reader_battery_icon_img_) {
+                            lv_image_set_src(self->reader_battery_icon_img_, icon_src);
+                        }
                         last_icon_mode = icon_mode;
                     }
 
@@ -381,6 +384,7 @@ void CustomLcdDisplay::DataUpdateTask(void *arg) {
                         lv_label_set_text(self->battery_pct_label_, bat_buf);
                         if (self->music_battery_pct_label_) lv_label_set_text(self->music_battery_pct_label_, bat_buf);
                         if (self->pomo_battery_pct_label_) lv_label_set_text(self->pomo_battery_pct_label_, bat_buf);
+                        if (self->reader_battery_pct_label_) lv_label_set_text(self->reader_battery_pct_label_, bat_buf);
                         last_battery_level = cached_battery_level;
                     }
 
@@ -420,6 +424,9 @@ void CustomLcdDisplay::DataUpdateTask(void *arg) {
                     if (self->pomo_wifi_icon_img_) {
                         lv_image_set_src(self->pomo_wifi_icon_img_, wifi_src);
                     }
+                    if (self->reader_wifi_icon_img_) {
+                        lv_image_set_src(self->reader_wifi_icon_img_, wifi_src);
+                    }
                     last_wifi_state = ds;
                 }
             }
@@ -454,6 +461,9 @@ void CustomLcdDisplay::DataUpdateTask(void *arg) {
                 if (self->music_emotion_label_) {
                     lv_label_set_text(self->music_emotion_label_, emotion_text);
                 }
+                if (self->reader_emotion_label_) {
+                    lv_label_set_text(self->reader_emotion_label_, emotion_text);
+                }
                 // 番茄钟运行中时，番茄钟页面的 AI 卡片不被普通状态变化覆盖
                 // 只在空闲时才让番茄钟页面跟随设备状态
                 auto& pomo_inst = PomodoroManager::getInstance();
@@ -476,6 +486,11 @@ void CustomLcdDisplay::DataUpdateTask(void *arg) {
                     ds != kDeviceStateActivating && self->music_chat_status_label_ && strlen(status_text) > 0) {
                     lv_label_set_long_mode(self->music_chat_status_label_, LV_LABEL_LONG_WRAP);
                     lv_label_set_text(self->music_chat_status_label_, status_text);
+                }
+                if (ds != kDeviceStateSpeaking && ds != kDeviceStateWifiConfiguring &&
+                    ds != kDeviceStateActivating && self->reader_chat_status_label_ && strlen(status_text) > 0) {
+                    lv_label_set_long_mode(self->reader_chat_status_label_, LV_LABEL_LONG_WRAP);
+                    lv_label_set_text(self->reader_chat_status_label_, status_text);
                 }
                 if (!pomo_running && ds != kDeviceStateSpeaking && ds != kDeviceStateWifiConfiguring &&
                     ds != kDeviceStateActivating && self->pomo_chat_status_label_ && strlen(status_text) > 0) {

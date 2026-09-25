@@ -2,6 +2,8 @@
 #define __CUSTOM_LCD_DISPLAY_H__
 
 #include <atomic>
+#include <string>
+#include <vector>
 #include <driver/gpio.h>
 #include "lcd_display.h"
 #include "rlcd_driver.h"
@@ -34,6 +36,7 @@ private:
         MODE_WEATHER = 0,
         MODE_MUSIC = 1,
         MODE_POMODORO = 2,
+        MODE_READER = 3,
     };
     DisplayMode display_mode_ = MODE_WEATHER;
 
@@ -90,6 +93,18 @@ private:
     lv_obj_t *pomo_battery_icon_img_ = nullptr;  // 状态栏电池图标
     lv_obj_t *pomo_battery_pct_label_ = nullptr; // 状态栏电量文字
 
+    // ===== 阅读器 UI 组件 =====
+    lv_obj_t *reader_page_ = nullptr;            // 阅读页容器
+    lv_obj_t *reader_top_label_ = nullptr;       // 顶行：《书名》 第N/M章 · 进度%
+    lv_obj_t *reader_content_card_ = nullptr;    // 正文白底卡片
+    lv_obj_t *reader_content_label_ = nullptr;   // 正文文本（按页渲染）
+    lv_obj_t *reader_wifi_icon_img_ = nullptr;   // 状态栏 WiFi 图标
+    lv_obj_t *reader_battery_icon_img_ = nullptr;    // 状态栏电池图标
+    lv_obj_t *reader_battery_pct_label_ = nullptr;   // 状态栏电量文字
+    lv_obj_t *reader_emotion_img_ = nullptr;     // 底部 AI 卡表情图片
+    lv_obj_t *reader_emotion_label_ = nullptr;   // 底部 AI 卡情绪文字
+    lv_obj_t *reader_chat_status_label_ = nullptr;   // 底部 AI 卡状态文字
+
     // 图片图标（不能用基类的 label，因为我们用 lv_image 而不是 Font Awesome 文字）
     lv_obj_t *wifi_icon_img_ = nullptr;
     lv_obj_t *battery_icon_img_ = nullptr;
@@ -120,11 +135,17 @@ private:
     // LVGL flush 回调（将 RGB565 转换为 1-bit 并刷新到 RLCD）
     static void Lvgl_flush_cb(lv_display_t * disp, const lv_area_t * area, uint8_t * color_p);
 
-    // UI 创建（实现在 weather_ui.cc / music_ui.cc / pomodoro_ui.cc）
+    // UI 创建（实现在 weather_ui.cc / music_ui.cc / pomodoro_ui.cc / reader_ui.cc）
     void SetupWeatherUI();
     void SetupMusicUI();
     void SetupPomodoroUI();
+    void SetupReaderUI();
     void ApplyDisplayMode();
+
+    // 阅读器内部（调用者需已持有 DisplayLock）
+    void ReaderEnsureLoaded();     // 懒加载：首次进入阅读页时扫描并打开书籍
+    void ReaderLoadChapter(int idx);   // 读取章节 + 分页 + 应用恢复页码
+    void ReaderRenderPage();       // 把当前页渲染到 UI 并保存进度
     
     // 备忘录
     void LoadMemoFromNvs();   // 从 NVS 加载备忘录到 UI
@@ -166,6 +187,16 @@ public:
     virtual void SetMusicProgress(uint32_t current_ms, uint32_t total_ms) override;
     virtual void SwitchToMusicPage() override;
     virtual void SwitchToWeatherPage() override;
+
+    // ===== 阅读器 =====
+    void SwitchToReaderPage();
+    bool IsReaderMode() const { return display_mode_ == MODE_READER; }
+    void ReaderNextPage();      // 下一页（到章节末尾自动进入下一章）
+    void ReaderPrevPage();      // 上一页（到章节开头自动回到上一章末页）
+    void ReaderNextChapter();   // 下一章
+    void ReaderPrevChapter();   // 上一章
+    bool ReaderOpenBook(const std::string& filename);   // 打开指定书籍并切到阅读页
+    std::vector<std::string> ReaderListBooks();         // 列出 SD 卡书目
     
     // 启动数据更新任务（需要在网络连接后调用）
     void StartDataUpdateTask();
