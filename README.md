@@ -1,173 +1,130 @@
-# An MCP-based Chatbot
+# ESP32-S3 桌面智能终端（天气站 · AI 助手 · 电子书阅读器）
 
-(English | [中文](README_zh.md) | [日本語](README_ja.md))
+> 基于 [78/xiaozhi-esp32](https://github.com/78/xiaozhi-esp32)（v2.2.2）二次开发，
+> 目标硬件：**微雪 ESP32-S3-RLCD-4.2** 开发板（400×300 反射式单色屏）。
+>
+> 原项目说明文档见 [README_zh.md](README_zh.md) / [README_ja.md](README_ja.md)。
 
-## Introduction
+本项目在小智 AI 语音助手的基础上，把设备改造为一台桌面智能终端：
+常显的天气站时钟页、音乐播放页、番茄钟（带白噪音）、备忘录，并保留完整的语音对话能力。
+下一阶段目标是增加**电子书阅读器**功能（见路线图）。
 
-👉 [Human: Give AI a camera vs AI: Instantly finds out the owner hasn't washed hair for three days【bilibili】](https://www.bilibili.com/video/BV1bpjgzKEhd/)
+## 在原项目基础上新增了什么
 
-👉 [Handcraft your AI girlfriend, beginner's guide【bilibili】](https://www.bilibili.com/video/BV1XnmFYLEJN/)
+### 1. 板级支持（全新目录 `main/boards/waveshare-s3-rlcd-4.2/`）
 
-As a voice interaction entry, the XiaoZhi AI chatbot leverages the AI capabilities of large models like Qwen / DeepSeek, and achieves multi-terminal control via the MCP protocol.
+- **400×300 RLCD 反射屏驱动**：SPI 40MHz、1-bit 帧缓冲（PSRAM）、RGB565→单色转换 LUT、对比度调节（`rlcd_driver.cc`）
+- **板载外设驱动**：
+  - SHTC3 温湿度传感器（I2C）
+  - PCF85063 实时时钟（纽扣电池备份，断电保持走时）
+  - SD 卡（SDMMC，挂载于 `/sdcard`，存放白噪音 MP3 与后续电子书）
+  - ADC 电量检测（GPIO4）+ 锂电充电管理
+  - ES8311/ES7210 音频编解码（沿用原项目）
+- **按键交互**：BOOT 单击 = 语音对话开关；USER 单击 = 切换页面、双击 = 刷新数据、长按 = 滚动显示系统信息
 
-<img src="docs/mcp-based-graph.jpg" alt="Control everything via MCP" width="320">
+### 2. 全新 UI（LVGL 9，三页 + 状态栏）
 
-## Version Notes
+| 页面 | 内容 |
+|---|---|
+| 🌤 **天气页**（主页） | 2×2 卡片布局：大字时钟 / 日历+天气 / AI 对话卡（表情+状态文字）/ MEMO 备忘录 |
+| 🎵 **音乐页** | 唱片封面、歌名/歌手、上/中/下三行歌词、进度条+时间 |
+| 🍅 **番茄钟页** | 状态文字、大号倒计时、进度条、"25分钟 专注 / 5分钟 休息"设定 |
 
-The current v2 version is incompatible with the v1 partition table, so it is not possible to upgrade from v1 to v2 via OTA. For partition table details, see [partitions/v2/README.md](partitions/v2/README.md).
+- 右上角浮动状态栏胶囊：WiFi 图标 + 电池图标 + 电量百分比；左上角温湿度
+- 每页底部统一的 AI 状态卡（表情图 + 状态文字），与小智对话状态联动
+- 低电量弹窗提示；**5 分钟无操作自动省电**（刷新频率 1s → 5s）
+- 页面代码拆分：`weather_ui.cc` / `music_ui.cc` / `pomodoro_ui.cc` / `data_update_task.cc`（后台数据刷新任务）
 
-All hardware running v1 can be upgraded to v2 by manually flashing the firmware.
+### 3. 新增功能
 
-The stable version of v1 is 1.9.2. You can switch to v1 by running `git checkout v1`. The v1 branch will be maintained until February 2026.
+- **番茄钟**：启动/暂停/恢复/停止，可联动 SD 卡白噪音（MP3）伴听
+- **白噪音播放器**：修复原框架播放卡顿，SD 卡文件扫描与管理（`managers/sdcard_manager`、`pomodoro_manager`）
+- **备忘录**：新增/列表/完成/清空，NVS 持久化，主界面常显
+- **天气回写**：由 AI 通过 MCP 工具写入天气数据，避免设备端频繁抓取
+- **自动省电模式**：空闲降频刷新 + 活动检测唤醒
 
-### Features Implemented
+### 4. 新增 MCP 工具（语音可控）
 
-- Wi-Fi / ML307 Cat.1 4G
-- Offline voice wake-up [ESP-SR](https://github.com/espressif/esp-sr)
-- Supports two communication protocols ([Websocket](docs/websocket.md) or MQTT+UDP)
-- Uses OPUS audio codec
-- Voice interaction based on streaming ASR + LLM + TTS architecture
-- Speaker recognition, identifies the current speaker [3D Speaker](https://github.com/modelscope/3D-Speaker)
-- OLED / LCD display, supports emoji display
-- Battery display and power management
-- Multi-language support (Chinese, English, Japanese)
-- Supports ESP32-C3, ESP32-S3, ESP32-P4 chip platforms
-- Device-side MCP for device control (Speaker, LED, Servo, GPIO, etc.)
-- Cloud-side MCP to extend large model capabilities (smart home control, PC desktop operation, knowledge search, email, etc.)
-- Customizable wake words, fonts, emojis, and chat backgrounds with online web-based editing ([Custom Assets Generator](https://github.com/78/xiaozhi-assets-generator))
+| 工具 | 作用 |
+|---|---|
+| `self.disp.switch` | 语音切换页面（`toggle`/`music`/`weather`/`pomodoro`） |
+| `self.pomodoro.start/stop/pause/status` | 番茄钟控制（含白噪音开关、分钟数参数） |
+| `self.memo.add/list/done/clear` | 备忘录增删查改 |
+| `self.weather.update` | AI 回写天气数据 |
+| `self.disp.network` | 重新配网 |
+| `self.system.info` | 查询 CPU/内存/运行时等系统信息 |
 
-## Hardware
+### 5. 文档
 
-### Breadboard DIY Practice
+- 板卡完整文档：[main/boards/waveshare-s3-rlcd-4.2/README.md](main/boards/waveshare-s3-rlcd-4.2/README.md)
+  （硬件、按键、屏幕布局、MCP 工具、功耗分析、故障排查）
+- 计划文档：[docs/2026-02-10-计划文档/](docs/2026-02-10-计划文档/)
+- 电子书功能设计：[docs/2026-09-25-电子书阅读器计划.md](docs/2026-09-25-电子书阅读器计划.md)
 
-See the Feishu document tutorial:
+## 路线图
 
-👉 ["XiaoZhi AI Chatbot Encyclopedia"](https://ccnphfhqs21z.feishu.cn/wiki/F5krwD16viZoF0kKkvDcrZNYnhb?from=from_copylink)
+- [ ] **电子书阅读器**：SD 卡本地 TXT 阅读（章节索引/手动分页/GBK 转码）+ MCP 联网下载，详见 [电子书阅读器计划](docs/2026-09-25-电子书阅读器计划.md)
+- [ ] RLCD 脏区刷新优化（提升翻页流畅度）
+- [ ] 备忘录日期提醒、传感器历史数据可视化
 
-Breadboard demo:
+## 硬件
 
-![Breadboard Demo](docs/v1/wiring2.jpg)
+| 项 | 规格 |
+|---|---|
+| 主控 | ESP32-S3-WROOM-1-N16R8（双核 240MHz，16MB Flash + 8MB PSRAM） |
+| 屏幕 | 4.2" 400×300 RLCD 反射屏（1-bit 单色，阳光可读，静态几乎零耗电） |
+| 传感器 | SHTC3 温湿度、PCF85063 RTC |
+| 音频 | ES8311 解码 / ES7210 编码 / MAX98357A 功放 |
+| 存储 | SD 卡（SDMMC） |
+| 电源 | 锂电池 + USB-C 充电，ADC 电量检测 |
 
-### Supports 70+ Open Source Hardware (Partial List)
+购买与官方 Wiki：[微雪 ESP32-S3-RLCD-4.2](https://www.waveshare.com/wiki/ESP32-S3-RLCD-4.2)
 
-- <a href="https://oshwhub.com/li-chuang-kai-fa-ban/li-chuang-shi-zhan-pai-esp32-s3-kai-fa-ban" target="_blank" title="LiChuang ESP32-S3 Development Board">LiChuang ESP32-S3 Development Board</a>
-- <a href="https://github.com/espressif/esp-box" target="_blank" title="Espressif ESP32-S3-BOX3">Espressif ESP32-S3-BOX3</a>
-- <a href="https://docs.m5stack.com/zh_CN/core/CoreS3" target="_blank" title="M5Stack CoreS3">M5Stack CoreS3</a>
-- <a href="https://docs.m5stack.com/en/atom/Atomic%20Echo%20Base" target="_blank" title="AtomS3R + Echo Base">M5Stack AtomS3R + Echo Base</a>
-- <a href="https://gf.bilibili.com/item/detail/1108782064" target="_blank" title="Magic Button 2.4">Magic Button 2.4</a>
-- <a href="https://www.waveshare.net/shop/ESP32-S3-Touch-AMOLED-1.8.htm" target="_blank" title="Waveshare ESP32-S3-Touch-AMOLED-1.8">Waveshare ESP32-S3-Touch-AMOLED-1.8</a>
-- <a href="https://github.com/Xinyuan-LilyGO/T-Circle-S3" target="_blank" title="LILYGO T-Circle-S3">LILYGO T-Circle-S3</a>
-- <a href="https://oshwhub.com/tenclass01/xmini_c3" target="_blank" title="XiaGe Mini C3">XiaGe Mini C3</a>
-- <a href="https://oshwhub.com/movecall/cuican-ai-pendant-lights-up-y" target="_blank" title="Movecall CuiCan ESP32S3">CuiCan AI Pendant</a>
-- <a href="https://github.com/WMnologo/xingzhi-ai" target="_blank" title="WMnologo-Xingzhi-1.54">WMnologo-Xingzhi-1.54TFT</a>
-- <a href="https://www.seeedstudio.com/SenseCAP-Watcher-W1-A-p-5979.html" target="_blank" title="SenseCAP Watcher">SenseCAP Watcher</a>
-- <a href="https://www.bilibili.com/video/BV1BHJtz6E2S/" target="_blank" title="ESP-HI Low Cost Robot Dog">ESP-HI Low Cost Robot Dog</a>
+## 编译与烧录
 
-<div style="display: flex; justify-content: space-between;">
-  <a href="docs/v1/lichuang-s3.jpg" target="_blank" title="LiChuang ESP32-S3 Development Board">
-    <img src="docs/v1/lichuang-s3.jpg" width="240" />
-  </a>
-  <a href="docs/v1/espbox3.jpg" target="_blank" title="Espressif ESP32-S3-BOX3">
-    <img src="docs/v1/espbox3.jpg" width="240" />
-  </a>
-  <a href="docs/v1/m5cores3.jpg" target="_blank" title="M5Stack CoreS3">
-    <img src="docs/v1/m5cores3.jpg" width="240" />
-  </a>
-  <a href="docs/v1/atoms3r.jpg" target="_blank" title="AtomS3R + Echo Base">
-    <img src="docs/v1/atoms3r.jpg" width="240" />
-  </a>
-  <a href="docs/v1/magiclick.jpg" target="_blank" title="Magic Button 2.4">
-    <img src="docs/v1/magiclick.jpg" width="240" />
-  </a>
-  <a href="docs/v1/waveshare.jpg" target="_blank" title="Waveshare ESP32-S3-Touch-AMOLED-1.8">
-    <img src="docs/v1/waveshare.jpg" width="240" />
-  </a>
-  <a href="docs/v1/lilygo-t-circle-s3.jpg" target="_blank" title="LILYGO T-Circle-S3">
-    <img src="docs/v1/lilygo-t-circle-s3.jpg" width="240" />
-  </a>
-  <a href="docs/v1/xmini-c3.jpg" target="_blank" title="XiaGe Mini C3">
-    <img src="docs/v1/xmini-c3.jpg" width="240" />
-  </a>
-  <a href="docs/v1/movecall-cuican-esp32s3.jpg" target="_blank" title="CuiCan">
-    <img src="docs/v1/movecall-cuican-esp32s3.jpg" width="240" />
-  </a>
-  <a href="docs/v1/wmnologo_xingzhi_1.54.jpg" target="_blank" title="WMnologo-Xingzhi-1.54">
-    <img src="docs/v1/wmnologo_xingzhi_1.54.jpg" width="240" />
-  </a>
-  <a href="docs/v1/sensecap_watcher.jpg" target="_blank" title="SenseCAP Watcher">
-    <img src="docs/v1/sensecap_watcher.jpg" width="240" />
-  </a>
-  <a href="docs/v1/esp-hi.jpg" target="_blank" title="ESP-HI Low Cost Robot Dog">
-    <img src="docs/v1/esp-hi.jpg" width="240" />
-  </a>
-</div>
+### 环境要求
 
-## Software
+- **ESP-IDF v5.5.2**（组件清单要求 ≥5.5.2）
+- Python 3.10+（3.14 已验证可用）
 
-### Firmware Flashing
+```bash
+# 1. 进入项目
+cd xiaozhi-esp32
 
-For beginners, it is recommended to use the firmware that can be flashed without setting up a development environment.
+# 2. 加载 ESP-IDF 环境
+source ~/esp/esp-idf/export.sh     # 路径按实际安装位置
 
-The firmware connects to the official [xiaozhi.me](https://xiaozhi.me) server by default. Personal users can register an account to use the Qwen real-time model for free.
+# 3. 首次配置：选择开发板
+idf.py set-target esp32s3
+idf.py menuconfig                  # 选择 Board Type → Waveshare S3 RLCD 4.2
 
-👉 [Beginner's Firmware Flashing Guide](https://ccnphfhqs21z.feishu.cn/wiki/Zpz4wXBtdimBrLk25WdcXzxcnNS)
+# 4. 编译
+idf.py build
 
-### Development Environment
+# 5. 烧录 + 串口监视
+idf.py flash monitor
+```
 
-- Cursor or VSCode
-- Install ESP-IDF plugin, select SDK version 5.4 or above
-- Linux is better than Windows for faster compilation and fewer driver issues
-- This project uses Google C++ code style, please ensure compliance when submitting code
+常用命令：`idf.py erase-flash`（清 NVS 重置配网）、`idf.py menuconfig`（配置）。
 
-### Developer Documentation
+## 目录结构（本项目相关部分）
 
-- [Custom Board Guide](docs/custom-board.md) - Learn how to create custom boards for XiaoZhi AI
-- [MCP Protocol IoT Control Usage](docs/mcp-usage.md) - Learn how to control IoT devices via MCP protocol
-- [MCP Protocol Interaction Flow](docs/mcp-protocol.md) - Device-side MCP protocol implementation
-- [MQTT + UDP Hybrid Communication Protocol Document](docs/mqtt-udp.md)
-- [A detailed WebSocket communication protocol document](docs/websocket.md)
+```
+main/
+├── boards/waveshare-s3-rlcd-4.2/   ← 本项目核心（板级 + UI + 管理器）
+│   ├── waveshare-s3-rlcd-4.2.cc    # 板级入口：按键、MCP 工具注册
+│   ├── rlcd_driver.cc              # RLCD 屏驱动
+│   ├── custom_lcd_display.cc       # 显示核心类与页面切换
+│   ├── weather_ui.cc / music_ui.cc / pomodoro_ui.cc
+│   ├── data_update_task.cc         # 后台数据刷新（时间/天气/传感器/AI状态）
+│   ├── managers/                   # weather / pomodoro / sdcard / sensor
+│   └── assets/                     # 字体、图标
+├── display/                        # 通用显示层（LVGL，沿用原项目）
+├── application.cc                  # 主状态机（原项目）
+└── mcp_server.cc                   # MCP 框架（原项目）
+```
 
-## Large Model Configuration
+## 致谢与许可
 
-If you already have a XiaoZhi AI chatbot device and have connected to the official server, you can log in to the [xiaozhi.me](https://xiaozhi.me) console for configuration.
-
-👉 [Backend Operation Video Tutorial (Old Interface)](https://www.bilibili.com/video/BV1jUCUY2EKM/)
-
-## Related Open Source Projects
-
-For server deployment on personal computers, refer to the following open-source projects:
-
-- [xinnan-tech/xiaozhi-esp32-server](https://github.com/xinnan-tech/xiaozhi-esp32-server) Python server
-- [joey-zhou/xiaozhi-esp32-server-java](https://github.com/joey-zhou/xiaozhi-esp32-server-java) Java server
-- [AnimeAIChat/xiaozhi-server-go](https://github.com/AnimeAIChat/xiaozhi-server-go) Golang server
-- [hackers365/xiaozhi-esp32-server-golang](https://github.com/hackers365/xiaozhi-esp32-server-golang) Golang server
-
-Other client projects using the XiaoZhi communication protocol:
-
-- [huangjunsen0406/py-xiaozhi](https://github.com/huangjunsen0406/py-xiaozhi) Python client
-- [TOM88812/xiaozhi-android-client](https://github.com/TOM88812/xiaozhi-android-client) Android client
-- [100askTeam/xiaozhi-linux](http://github.com/100askTeam/xiaozhi-linux) Linux client by 100ask
-- [78/xiaozhi-sf32](https://github.com/78/xiaozhi-sf32) Bluetooth chip firmware by Sichuan
-- [QuecPython/solution-xiaozhiAI](https://github.com/QuecPython/solution-xiaozhiAI) QuecPython firmware by Quectel
-
-Custom Assets Tools:
-
-- [78/xiaozhi-assets-generator](https://github.com/78/xiaozhi-assets-generator) Custom Assets Generator (Wake words, fonts, emojis, backgrounds)
-
-## About the Project
-
-This is an open-source ESP32 project, released under the MIT license, allowing anyone to use it for free, including for commercial purposes.
-
-We hope this project helps everyone understand AI hardware development and apply rapidly evolving large language models to real hardware devices.
-
-If you have any ideas or suggestions, please feel free to raise Issues or join our [Discord](https://discord.gg/bXqgAfRm) or QQ group: 994694848
-
-## Star History
-
-<a href="https://star-history.com/#78/xiaozhi-esp32&Date">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=78/xiaozhi-esp32&type=Date&theme=dark" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=78/xiaozhi-esp32&type=Date" />
-   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=78/xiaozhi-esp32&type=Date" />
- </picture>
-</a> 
+- 感谢 [78/xiaozhi-esp32](https://github.com/78/xiaozhi-esp32) 提供的优秀开源基础
+- 本项目遵循原项目 **MIT 许可证**（见 [LICENSE](LICENSE)）
