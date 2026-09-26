@@ -83,6 +83,9 @@ void CustomLcdDisplay::SetupPomodoroUI() {
     lv_obj_align(pomo_sensor_label_, LV_ALIGN_TOP_LEFT, 80, 11);
     lv_label_set_text(pomo_sensor_label_, "--.-°C --.-%");
 
+    // 顶栏中央「小智」+ 状态图标
+    CreateTopStatus(page);
+
     // 右上角状态栏胶囊
     lv_obj_t *status_bar = lv_obj_create(page);
     lv_obj_set_size(status_bar, 115, 28);
@@ -169,66 +172,5 @@ void CustomLcdDisplay::SetupPomodoroUI() {
     lv_label_set_text(pomo_info_label_, "25分钟 专注 / 5分钟 休息");
     lv_obj_align(pomo_info_label_, LV_ALIGN_TOP_MID, 0, bar_y + 20);
 
-    // ============================================================
-    // 第 5 层：底部 AI 状态卡（和天气页/音乐页一致的布局）
-    // ============================================================
-
-    const int ai_h = 72;
-    const int ai_w = SCR_W - PAD * 2;
-    const int ai_y = SCR_H - ai_h - 6;
-    const int emotion_w = 56;
-
-    lv_obj_t *ai_card = lv_obj_create(page);
-    lv_obj_set_size(ai_card, ai_w, ai_h);
-    lv_obj_set_pos(ai_card, PAD, ai_y);
-    lv_obj_set_style_bg_color(ai_card, lv_color_white(), 0);
-    lv_obj_set_style_bg_opa(ai_card, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(ai_card, 2, 0);
-    lv_obj_set_style_border_color(ai_card, lv_color_black(), 0);
-    lv_obj_set_style_radius(ai_card, 16, 0);
-    lv_obj_set_style_pad_all(ai_card, 0, 0);
-    lv_obj_remove_flag(ai_card, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_style_clip_corner(ai_card, true, 0);
-
-    // 左侧：emoji 图片
-    pomo_emotion_img_ = lv_image_create(ai_card);
-    lv_obj_set_size(pomo_emotion_img_, 40, 40);
-    lv_image_set_inner_align(pomo_emotion_img_, LV_IMAGE_ALIGN_CENTER);
-    lv_obj_align(pomo_emotion_img_, LV_ALIGN_LEFT_MID, 10, -10);
-    lv_obj_add_flag(pomo_emotion_img_, LV_OBJ_FLAG_HIDDEN);
-
-    // 左侧：情绪文字标签
-    pomo_emotion_label_ = lv_label_create(ai_card);
-    lv_obj_set_style_text_font(pomo_emotion_label_, font_cn, 0);
-    lv_obj_set_style_text_color(pomo_emotion_label_, lv_color_black(), 0);
-    lv_obj_set_style_text_align(pomo_emotion_label_, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_width(pomo_emotion_label_, emotion_w);
-    lv_label_set_long_mode(pomo_emotion_label_, LV_LABEL_LONG_WRAP);
-    lv_label_set_text(pomo_emotion_label_, "待命");
-    lv_obj_align(pomo_emotion_label_, LV_ALIGN_LEFT_MID, 4, 20);
-
-    // 竖分隔线
-    lv_obj_t *divider = lv_obj_create(ai_card);
-    lv_obj_set_size(divider, 2, ai_h - 20);
-    lv_obj_set_style_bg_color(divider, lv_color_black(), 0);
-    lv_obj_set_style_bg_opa(divider, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(divider, 0, 0);
-    lv_obj_set_style_radius(divider, 1, 0);
-    lv_obj_align(divider, LV_ALIGN_LEFT_MID, emotion_w + 10, 0);
-    lv_obj_remove_flag(divider, LV_OBJ_FLAG_SCROLLABLE);
-
-    // 右侧：AI 对话文字
-    const int text_x = emotion_w + 18;
-    const int text_w = ai_w - text_x - 12;
-    pomo_chat_status_label_ = lv_label_create(ai_card);
-    lv_obj_set_style_text_font(pomo_chat_status_label_, font_cn, 0);
-    lv_obj_set_style_text_color(pomo_chat_status_label_, lv_color_black(), 0);
-    lv_obj_set_style_text_align(pomo_chat_status_label_, LV_TEXT_ALIGN_LEFT, 0);
-    lv_obj_set_width(pomo_chat_status_label_, text_w);
-    lv_obj_set_style_text_line_space(pomo_chat_status_label_, 3, 0);
-    lv_label_set_long_mode(pomo_chat_status_label_, LV_LABEL_LONG_WRAP);
-    lv_label_set_text(pomo_chat_status_label_, "说「开始番茄钟」启动");
-    lv_obj_align(pomo_chat_status_label_, LV_ALIGN_LEFT_MID, text_x, 0);
-
-    ESP_LOGI(TAG, "番茄钟页面 UI 创建完成");
+    ESP_LOGI(TAG, "番茄钟页面 UI 创建完成（AI 卡已移除）");
 }

@@ -90,8 +90,10 @@ private:
         }
     }
 
-    void InitializeButtons() { 
-        // BOOT 按钮（GPIO0）- 主要交互按键
+    void InitializeButtons() {
+        // ===== 按键映射（改版）=====
+        // BOOT：单击=ToggleChatState（启动时=配网） / 双击=上下文动作 / 长按=不注册（防误触）
+        // USER：单击=切页（阅读页=下一页） / 双击、长按=按页上下文动作
         boot_button_.OnClick([this]() {
             if (display_) display_->NotifyUserActivity();  // 记录用户活动
             auto& app = Application::GetInstance();
@@ -102,9 +104,29 @@ private:
             app.ToggleChatState();
         });
 
-        // USER 按钮（GPIO18）- 辅助功能按键
-        // 阅读模式下：单击=下一页 / 双击=上一章 / 长按=下一章
-        // 其他模式：单击=切页 / 双击=刷新数据 / 长按=系统信息
+        boot_button_.OnDoubleClick([this]() {
+            if (display_) display_->NotifyUserActivity();
+            if (!display_) return;
+            if (display_->IsReaderMode()) {
+                display_->CycleDisplayMode();   // 阅读页：退出（切页）
+                ESP_LOGI(TAG, "BOOT 双击：退出阅读页");
+            } else if (display_->IsMusicMode()) {
+                Application::GetInstance().StopMusicPlayback();   // 音乐页：停止播放
+                ESP_LOGI(TAG, "BOOT 双击：停止播放");
+            } else if (display_->IsPomodoroMode()) {
+                auto& pomo = PomodoroManager::getInstance();      // 番茄页：暂停/继续
+                if (pomo.getState() != PomodoroManager::IDLE) {
+                    pomo.togglePause();
+                    ESP_LOGI(TAG, "BOOT 双击：番茄钟暂停/继续");
+                }
+            } else if (display_->IsSystemInfoMode()) {
+                display_->CycleDisplayMode();   // 系统页：切页
+            } else {
+                RefreshAllData();               // 天气页：刷新数据（NTP）
+            }
+        });
+
+        // USER 按钮（GPIO18）
         user_button_.OnClick([this]() {
             if (display_) display_->NotifyUserActivity();  // 记录用户活动
             if (!display_) return;
@@ -117,139 +139,52 @@ private:
         });
 
         user_button_.OnDoubleClick([this]() {
-            if (display_) display_->NotifyUserActivity();  // 记录用户活动
-            if (display_ && display_->IsReaderMode()) {
+            if (display_) display_->NotifyUserActivity();
+            if (!display_) return;
+            if (display_->IsReaderMode()) {
                 display_->ReaderPrevChapter();
                 ESP_LOGI(TAG, "USER 按钮双击：上一章");
+            } else if (display_->IsMusicMode()) {
+                AdjustVolume(+10);              // 音乐页：音量 +10
+            } else if (display_->IsPomodoroMode()) {
+                auto& pomo = PomodoroManager::getInstance();   // 番茄页：开始/停止
+                if (pomo.getState() == PomodoroManager::IDLE) {
+                    pomo.start(25, true);
+                    ESP_LOGI(TAG, "USER 按钮双击：开始番茄钟");
+                } else {
+                    pomo.stop();
+                    ESP_LOGI(TAG, "USER 按钮双击：停止番茄钟");
+                }
+            } else if (display_->IsSystemInfoMode()) {
+                // 预留
             } else {
-                // 双击：刷新所有数据（天气、传感器、时间）
-                RefreshAllData();
+                RefreshAllData();               // 天气页：刷新数据
             }
         });
 
         user_button_.OnLongPress([this]() {
-            if (display_) display_->NotifyUserActivity();  // 记录用户活动
-            if (display_ && display_->IsReaderMode()) {
+            if (display_) display_->NotifyUserActivity();
+            if (!display_) return;
+            if (display_->IsReaderMode()) {
                 display_->ReaderNextChapter();
                 ESP_LOGI(TAG, "USER 按钮长按：下一章");
-            } else {
-                // 长按：显示系统信息
-                ShowSystemInfo();
+            } else if (display_->IsMusicMode()) {
+                AdjustVolume(-10);              // 音乐页：音量 -10
             }
+            // 天气页 / 番茄页 / 系统页：预留
         });
     }
 
-    // USER 按钮功能实现
-    void ShowSystemInfo() {
-        // 显示详细系统信息到 AI 对话区（启用多行滚动）
-        char info[512];
-        
-        // 内存信息
-        size_t free_heap = esp_get_free_heap_size();
-        size_t total_heap = heap_caps_get_total_size(MALLOC_CAP_8BIT);
-        size_t free_psram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
-        size_t total_psram = heap_caps_get_total_size(MALLOC_CAP_SPIRAM);
-        
-        // CPU 信息
-        rtc_cpu_freq_config_t cpu_freq_conf;
-        rtc_clk_cpu_freq_get_config(&cpu_freq_conf);
-        uint32_t cpu_freq_mhz = cpu_freq_conf.freq_mhz;
-        
-        // 电池信息
-        int battery_level = 0;
-        bool charging = false, discharging = false;
-        GetBatteryLevel(battery_level, charging, discharging);
-        
-        // WiFi 信息
-        auto& app = Application::GetInstance();
-        const char* wifi_status = "未连接";
-        if (app.GetDeviceState() != kDeviceStateStarting && 
-            app.GetDeviceState() != kDeviceStateWifiConfiguring) {
-            wifi_status = "已连接";
-        }
-        
-        // 运行时间
-        uint64_t uptime_sec = esp_timer_get_time() / 1000000;
-        uint32_t uptime_hours = uptime_sec / 3600;
-        uint32_t uptime_mins = (uptime_sec % 3600) / 60;
-        
-        // 计算百分比
-        int heap_percent = (int)(((total_heap - free_heap) * 100.0f) / total_heap);
-        int psram_percent = total_psram > 0 ? 
-                           (int)(((total_psram - free_psram) * 100.0f) / total_psram) : 0;
-        
-        // 详细格式（单份内容，用于鱼咬尾拼接）
-        snprintf(info, sizeof(info), 
-                 "=== 系统信息 ===\n"
-                 "CPU: %luMHz\n"
-                 "运行: %luh%lumin\n"
-                 "SRAM: \n %dKB/%dKB (%d%%)\n"
-                 "PSRAM: \n %dMB/%dMB (%d%%)\n"
-                 "电池: %d%% %s\n"
-                 "WiFi: %s\n"
-                 "==============\n"
-                 "\n",  // 分隔符
-                 cpu_freq_mhz,
-                 uptime_hours, uptime_mins,
-                 (total_heap - free_heap) / 1024, total_heap / 1024, heap_percent,
-                 (total_psram - free_psram) / 1024 / 1024, total_psram / 1024 / 1024, psram_percent,
-                 battery_level, charging ? "充电中" : "放电中",
-                 wifi_status);
-        
-        if (display_) {
-            lv_obj_t* chat_label = display_->GetChatStatusLabel();
-            if (chat_label) {
-                // 暂停 DataUpdateTask 对 UI 的更新（避免锁竞争导致 watchdog 超时）
-                display_->SetShowingSystemInfo(true);
-                
-                {
-                    DisplayLockGuard lock(display_);
-                    
-                    // 先删除旧动画（防止冲突）
-                    lv_anim_delete(chat_label, nullptr);
-                    
-                    // 🐟 鱼咬尾：拼接两份相同内容
-                    std::string info_double = std::string(info) + std::string(info);
-                    
-                    // 🔑 关键修复：切换到 TOP_LEFT 绝对定位
-                    // 原因：label 初始化时用的是 LV_ALIGN_LEFT_MID（居中对齐），
-                    // LVGL 内部会存储这个对齐方式，布局刷新时会重新计算位置，
-                    // 导致动画里 set_y 设的值被覆盖。
-                    // 切换到 TOP_LEFT 后，Y=0 就是父容器顶部，动画不会被干扰。
-                    const int text_x = 64 + 20;  // emotion_w + 间距，保持文字在分隔线右侧
-                    lv_obj_align(chat_label, LV_ALIGN_TOP_LEFT, text_x, 0);
-                    
-                    lv_label_set_text(chat_label, info_double.c_str());
-                    lv_label_set_long_mode(chat_label, LV_LABEL_LONG_WRAP);
-                    
-                    // 强制计算布局，获取实际高度
-                    lv_obj_update_layout(chat_label);
-                    int label_h = lv_obj_get_height(chat_label);  // 双份内容的总高度
-                    int single_h = label_h / 2;  // 单份内容高度
-                    
-                    // 🐟 鱼咬尾动画原理：
-                    // 内容 = [A][A]（两份完全相同的文字首尾相接）
-                    // Y=0 时显示第一个 A 的开头
-                    // 向上滚动到 Y=-single_h 时，显示第二个 A 的开头
-                    // 因为两个 A 完全一样，动画重复跳回 Y=0 时视觉上无缝衔接！
-                    lv_anim_t a;
-                    lv_anim_init(&a);
-                    lv_anim_set_var(&a, chat_label);
-                    lv_anim_set_values(&a, 0, -single_h);
-                    lv_anim_set_delay(&a, 1500);  // 开始前停顿 1.5 秒，让用户先看到开头
-                    lv_anim_set_duration(&a, single_h * 30);  // 速度：每像素 30ms
-                    lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
-                    lv_anim_set_repeat_delay(&a, 0);  // 无缝重复，不停顿
-                    lv_anim_set_exec_cb(&a, [](void *obj, int32_t v) {
-                        lv_obj_set_y((lv_obj_t *)obj, v);
-                    });
-                    lv_anim_start(&a);
-                }  // ← DisplayLockGuard 在这里自动释放
-            }
-        }
-        
-        ESP_LOGI(TAG, "系统信息: CPU=%luMHz, 运行=%luh%lumin, SRAM=%d%%, PSRAM=%d%%, 电量=%d%%", 
-                 cpu_freq_mhz, uptime_hours, uptime_mins, heap_percent, psram_percent, battery_level);
+    // 音量调节（0..100，步进 ±10），并在音乐页显示音量胶囊 2 秒
+    void AdjustVolume(int delta) {
+        auto codec = Board::GetInstance().GetAudioCodec();
+        if (!codec) return;
+        int volume = codec->output_volume() + delta;
+        if (volume < 0) volume = 0;
+        if (volume > 100) volume = 100;
+        codec->SetOutputVolume(volume);
+        if (display_) display_->ShowMusicVolume(volume);
+        ESP_LOGI(TAG, "音量调整: %d%%", volume);
     }
 
     void RefreshAllData() {
@@ -260,11 +195,6 @@ private:
         
         // 重新同步 NTP 时间
         SensorManager::getInstance().syncNtpTime();
-        
-        // 强制刷新屏幕显示
-        if (display_) {
-            display_->SetChatMessage("system", "正在刷新数据...\n时间已更新，天气等待 MCP 同步");
-        }
         
         ESP_LOGI(TAG, "数据刷新完成");
     }
@@ -364,10 +294,10 @@ private:
         // ===== 屏幕切换工具（语音可调用）=====
         mcp_server.AddTool(
             "self.disp.switch",
-            "Switch display page between weather, music, pomodoro, and reader.\n"
-            "Use when user says: '切到音乐页', '打开天气页', '切换屏幕', '打开番茄钟页面', '打开阅读页', '看书', 'switch screen'.\n"
+            "Switch display page between weather, music, pomodoro, reader, and system.\n"
+            "Use when user says: '切到音乐页', '打开天气页', '切换屏幕', '打开番茄钟页面', '打开阅读页', '看书', '系统信息', 'switch screen'.\n"
             "Args:\n"
-            "  `mode`: 'toggle' | 'music' | 'weather' | 'pomodoro' | 'reader' (default: 'toggle')",
+            "  `mode`: 'toggle' | 'music' | 'weather' | 'pomodoro' | 'reader' | 'system' (default: 'toggle')",
             PropertyList({
                 Property("mode", kPropertyTypeString, std::string("toggle"))
             }),
@@ -397,13 +327,16 @@ private:
                     display_->SwitchToPomodoroPage();
                 } else if (mode == "reader") {
                     display_->SwitchToReaderPage();
+                } else if (mode == "system") {
+                    display_->SwitchToSystemInfoPage();
                 } else {
-                    return std::string("参数 mode 无效，请使用 toggle/music/weather/pomodoro/reader");
+                    return std::string("参数 mode 无效，请使用 toggle/music/weather/pomodoro/reader/system");
                 }
 
                 if (display_->IsReaderMode()) return std::string("已切换到阅读页");
                 if (display_->IsMusicMode()) return std::string("已切换到音乐页");
                 if (display_->IsPomodoroMode()) return std::string("已切换到番茄钟页");
+                if (display_->IsSystemInfoMode()) return std::string("已切换到系统信息页");
                 return std::string("已切换到天气页");
             }
         );

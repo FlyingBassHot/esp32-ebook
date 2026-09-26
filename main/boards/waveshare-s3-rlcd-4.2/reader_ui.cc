@@ -1,23 +1,21 @@
 // 阅读器页 UI —— TXT 电子书阅读
 //
-// 400×300 黑白单色 RLCD，全屏黑底。
+// 400×300 黑白单色 RLCD，全屏黑底。**无顶栏**（沉浸阅读）。
 // 中文统一使用小智自带 font_puhui_16_4（7415 常用汉字），避免缺字。
 //
 // 布局：
 // ┌──────────────────────────────────────────┐
-// │《书名》 第3/120章 42%   [WiFi][电池][85%]│ 顶行：书信息 + 状态胶囊
 // │  ┌────────────────────────────────────┐  │
-// │  │ 正文（白底卡片，按页渲染）            │  │ 主体：约 22 字 × 9 行
+// │  │《书名》 第3/120章 42%              │  │  通栏卡片 384×284，8px 对称边距
+// │  │ ───────────────────────────────    │  │  卡内首行：书信息（黑字居中）
+// │  │ 正文（白底，按页渲染）               │  │  主体：约 23 字 × 11 行
 // │  │                                    │  │
-// │  └────────────────────────────────────┘  │
-// │  ┌────────────────────────────────────┐  │
-// │  │[emoji] 待命 │  AI 待命              │  │ 底部 AI 状态卡（与三页统一）
 // │  └────────────────────────────────────┘  │
 // └──────────────────────────────────────────┘
 //
 // 交互：
 // - USER 单击：下一页（章末自动进下一章）
-// - USER 双击：上一章    USER 长按：下一章
+// - USER 长按：下一章    BOOT 双击：退出（切页）
 // - 语音：self.disp.switch mode=reader
 // - 书籍放在 SD 卡 /sdcard/books/*.txt（GBK 自动转码缓存）
 
@@ -30,36 +28,30 @@
 #include <cstdio>
 
 // 字体
-LV_FONT_DECLARE(alibaba_puhui_16);   // 纯数字/ASCII（电量百分比）
+LV_FONT_DECLARE(alibaba_puhui_16);   // 纯数字/ASCII
 LV_FONT_DECLARE(font_puhui_16_4);    // 16px 小智完整字库（正文/中文）
-LV_FONT_DECLARE(font_puhui_14_1);    // 14px 小字（顶行书信息）
-
-// 状态栏图标
-LV_IMAGE_DECLARE(ui_img_wifi);
-LV_IMAGE_DECLARE(ui_img_wifi_off);
-LV_IMAGE_DECLARE(ui_img_battery_full);
+LV_FONT_DECLARE(font_puhui_14_1);    // 14px 小字（卡内书信息）
 
 static const char *TAG = "ReaderUI";
 
-// 正文卡片几何（与布局图对应）
+// 正文卡片几何（通栏，对称 8px 边距）
 static const int SCR_W = 400;
 static const int SCR_H = 300;
-static const int PAD = 12;
-static const int CARD_X = PAD;
-static const int CARD_Y = 36;
-static const int CARD_W = SCR_W - PAD * 2;      // 376
-static const int CARD_H = 180;                   // y 36..216
+static const int CARD_X = 8;
+static const int CARD_Y = 8;
+static const int CARD_W = 384;                  // 8..392
+static const int CARD_H = 284;                   // 8..292
 static const int CARD_BORDER = 2;
 static const int CARD_PAD = 10;
-// 正文可用高度：卡片高 - 上下边框 - 上下内边距
-static const uint32_t CONTENT_MAX_H = CARD_H - CARD_BORDER * 2 - CARD_PAD * 2;  // 156px
-static const int32_t CONTENT_W = CARD_W - CARD_BORDER * 2 - CARD_PAD * 2;       // 352px
+static const int HEADER_H = 32;                  // 卡内首行书信息 + 分隔线占位
+// 正文可用高度：卡片高 - 上下边框 - 上下内边距 - 首行高度
+static const uint32_t CONTENT_MAX_H = CARD_H - CARD_BORDER * 2 - CARD_PAD * 2 - HEADER_H;  // 228px
+static const int32_t CONTENT_W = CARD_W - CARD_BORDER * 2 - CARD_PAD * 2;                  // 360px
 
 void CustomLcdDisplay::SetupReaderUI() {
     DisplayLockGuard lock(this);
 
     lv_obj_t *root = lv_screen_active();
-    const lv_font_t *font_num  = &alibaba_puhui_16;
     const lv_font_t *font_cn   = &font_puhui_16_4;
     const lv_font_t *font_sm   = &font_puhui_14_1;
 
@@ -78,44 +70,7 @@ void CustomLcdDisplay::SetupReaderUI() {
     lv_obj_t *page = reader_page_;
 
     // ============================================================
-    // 第 1 层：顶行 —— 左侧书信息 + 右侧状态胶囊
-    // ============================================================
-
-    reader_top_label_ = lv_label_create(page);
-    lv_obj_set_style_text_font(reader_top_label_, font_sm, 0);
-    lv_obj_set_style_text_color(reader_top_label_, lv_color_white(), 0);
-    lv_obj_set_width(reader_top_label_, 250);
-    lv_label_set_long_mode(reader_top_label_, LV_LABEL_LONG_DOT);
-    lv_obj_align(reader_top_label_, LV_ALIGN_TOP_LEFT, 10, 10);
-    lv_label_set_text(reader_top_label_, "电子书");
-
-    // 右上角状态栏胶囊（与音乐页一致）
-    lv_obj_t *status_bar = lv_obj_create(page);
-    lv_obj_set_size(status_bar, 115, 28);
-    lv_obj_set_style_bg_opa(status_bar, LV_OPA_COVER, 0);
-    lv_obj_set_style_bg_color(status_bar, lv_color_white(), 0);
-    lv_obj_set_style_border_width(status_bar, 0, 0);
-    lv_obj_set_style_radius(status_bar, 14, 0);
-    lv_obj_align(status_bar, LV_ALIGN_TOP_RIGHT, -8, 4);
-    lv_obj_set_style_pad_left(status_bar, 8, 0);
-    lv_obj_set_style_pad_right(status_bar, 8, 0);
-    lv_obj_set_style_pad_column(status_bar, 5, 0);
-    lv_obj_set_style_pad_row(status_bar, 0, 0);
-    lv_obj_remove_flag(status_bar, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_flex_flow(status_bar, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(status_bar, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-
-    reader_wifi_icon_img_ = lv_image_create(status_bar);
-    lv_image_set_src(reader_wifi_icon_img_, &ui_img_wifi_off);
-    reader_battery_icon_img_ = lv_image_create(status_bar);
-    lv_image_set_src(reader_battery_icon_img_, &ui_img_battery_full);
-    reader_battery_pct_label_ = lv_label_create(status_bar);
-    lv_obj_set_style_text_font(reader_battery_pct_label_, font_num, 0);
-    lv_obj_set_style_text_color(reader_battery_pct_label_, lv_color_black(), 0);
-    lv_label_set_text(reader_battery_pct_label_, "---%");
-
-    // ============================================================
-    // 第 2 层：正文白底卡片
+    // 通栏正文卡片（无顶栏：小智/胶囊/时间/温湿度全部移除）
     // ============================================================
 
     reader_content_card_ = lv_obj_create(page);
@@ -130,81 +85,38 @@ void CustomLcdDisplay::SetupReaderUI() {
     lv_obj_remove_flag(reader_content_card_, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_style_clip_corner(reader_content_card_, true, 0);
 
-    const int text_w = CONTENT_W;
+    // 卡内首行：书信息（黑字居中）
+    reader_top_label_ = lv_label_create(reader_content_card_);
+    lv_obj_set_style_text_font(reader_top_label_, font_sm, 0);
+    lv_obj_set_style_text_color(reader_top_label_, lv_color_black(), 0);
+    lv_obj_set_style_text_align(reader_top_label_, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_width(reader_top_label_, CONTENT_W);
+    lv_label_set_long_mode(reader_top_label_, LV_LABEL_LONG_DOT);
+    lv_obj_align(reader_top_label_, LV_ALIGN_TOP_LEFT, 0, 0);
+    lv_label_set_text(reader_top_label_, "电子书");
 
+    // 首行下分隔线
+    lv_obj_t *sep = lv_obj_create(reader_content_card_);
+    lv_obj_set_size(sep, CONTENT_W, 1);
+    lv_obj_set_pos(sep, 0, HEADER_H - 8);
+    lv_obj_set_style_bg_color(sep, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(sep, LV_OPA_30, 0);
+    lv_obj_set_style_border_width(sep, 0, 0);
+    lv_obj_remove_flag(sep, LV_OBJ_FLAG_SCROLLABLE);
+
+    // 正文
     reader_content_label_ = lv_label_create(reader_content_card_);
     lv_obj_set_style_text_font(reader_content_label_, font_cn, 0);
     lv_obj_set_style_text_color(reader_content_label_, lv_color_black(), 0);
     lv_obj_set_style_text_align(reader_content_label_, LV_TEXT_ALIGN_LEFT, 0);
-    lv_obj_set_width(reader_content_label_, text_w);
+    lv_obj_set_width(reader_content_label_, CONTENT_W);
     lv_obj_set_style_text_line_space(reader_content_label_, 3, 0);
     lv_label_set_long_mode(reader_content_label_, LV_LABEL_LONG_WRAP);
-    lv_obj_align(reader_content_label_, LV_ALIGN_TOP_LEFT, 0, 0);
-    lv_label_set_text(reader_content_label_,
-        "电子书\n\n"
-        "把 .txt 文件放到 SD 卡:\n"
-        "/sdcard/books/\n\n"
-        "支持 UTF-8 和 GBK 编码\n"
-        "USER 键翻页 · 双击上一章 · 长按下一章");
+    lv_obj_align(reader_content_label_, LV_ALIGN_TOP_LEFT, 0, HEADER_H);
+    lv_label_set_text(reader_content_label_, "SD 卡未检测到书籍");
 
-    // ============================================================
-    // 第 3 层：底部 AI 状态卡（与音乐页一致）
-    // ============================================================
-
-    const int ai_h = 72;
-    const int ai_w = SCR_W - PAD * 2;
-    const int ai_y = SCR_H - ai_h - 6;
-    const int emotion_w = 56;
-
-    lv_obj_t *ai_card = lv_obj_create(page);
-    lv_obj_set_size(ai_card, ai_w, ai_h);
-    lv_obj_set_pos(ai_card, PAD, ai_y);
-    lv_obj_set_style_bg_color(ai_card, lv_color_white(), 0);
-    lv_obj_set_style_bg_opa(ai_card, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(ai_card, 2, 0);
-    lv_obj_set_style_border_color(ai_card, lv_color_black(), 0);
-    lv_obj_set_style_radius(ai_card, 16, 0);
-    lv_obj_set_style_pad_all(ai_card, 0, 0);
-    lv_obj_remove_flag(ai_card, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_style_clip_corner(ai_card, true, 0);
-
-    reader_emotion_img_ = lv_image_create(ai_card);
-    lv_obj_set_size(reader_emotion_img_, 40, 40);
-    lv_image_set_inner_align(reader_emotion_img_, LV_IMAGE_ALIGN_CENTER);
-    lv_obj_align(reader_emotion_img_, LV_ALIGN_LEFT_MID, 10, -10);
-    lv_obj_add_flag(reader_emotion_img_, LV_OBJ_FLAG_HIDDEN);
-
-    reader_emotion_label_ = lv_label_create(ai_card);
-    lv_obj_set_style_text_font(reader_emotion_label_, font_cn, 0);
-    lv_obj_set_style_text_color(reader_emotion_label_, lv_color_black(), 0);
-    lv_obj_set_style_text_align(reader_emotion_label_, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_width(reader_emotion_label_, emotion_w);
-    lv_label_set_long_mode(reader_emotion_label_, LV_LABEL_LONG_WRAP);
-    lv_label_set_text(reader_emotion_label_, "待命");
-    lv_obj_align(reader_emotion_label_, LV_ALIGN_LEFT_MID, 4, 20);
-
-    lv_obj_t *divider = lv_obj_create(ai_card);
-    lv_obj_set_size(divider, 2, ai_h - 20);
-    lv_obj_set_style_bg_color(divider, lv_color_black(), 0);
-    lv_obj_set_style_bg_opa(divider, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(divider, 0, 0);
-    lv_obj_set_style_radius(divider, 1, 0);
-    lv_obj_align(divider, LV_ALIGN_LEFT_MID, emotion_w + 10, 0);
-    lv_obj_remove_flag(divider, LV_OBJ_FLAG_SCROLLABLE);
-
-    const int text_x = emotion_w + 18;
-    const int ai_text_w = ai_w - text_x - 12;
-    reader_chat_status_label_ = lv_label_create(ai_card);
-    lv_obj_set_style_text_font(reader_chat_status_label_, font_cn, 0);
-    lv_obj_set_style_text_color(reader_chat_status_label_, lv_color_black(), 0);
-    lv_obj_set_style_text_align(reader_chat_status_label_, LV_TEXT_ALIGN_LEFT, 0);
-    lv_obj_set_width(reader_chat_status_label_, ai_text_w);
-    lv_obj_set_style_text_line_space(reader_chat_status_label_, 3, 0);
-    lv_label_set_long_mode(reader_chat_status_label_, LV_LABEL_LONG_WRAP);
-    lv_label_set_text(reader_chat_status_label_, "AI 待命");
-    lv_obj_align(reader_chat_status_label_, LV_ALIGN_LEFT_MID, text_x, 0);
-
-    ESP_LOGI(TAG, "阅读页 UI 创建完成");
+    ESP_LOGI(TAG, "阅读页 UI 创建完成（通栏卡 %dx%d，正文区 %dx%d）",
+             CARD_W, CARD_H, (int)CONTENT_W, (int)CONTENT_MAX_H);
 }
 
 // ===== 阅读器加载与渲染（以下方法调用者需已持有 DisplayLock）=====
@@ -218,11 +130,7 @@ void CustomLcdDisplay::ReaderEnsureLoaded() {
     if (books.empty()) {
         ESP_LOGW(TAG, "SD 卡上未找到书籍（/sdcard/books/*.txt）");
         if (reader_content_label_) {
-            lv_label_set_text(reader_content_label_,
-                "未找到书籍\n\n"
-                "把 .txt 文件放到 SD 卡:\n"
-                "/sdcard/books/\n\n"
-                "支持 UTF-8 和 GBK 编码");
+            lv_label_set_text(reader_content_label_, "SD 卡未检测到书籍");
         }
         if (reader_top_label_) lv_label_set_text(reader_top_label_, "电子书");
         return;

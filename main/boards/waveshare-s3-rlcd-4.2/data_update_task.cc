@@ -175,8 +175,7 @@ void CustomLcdDisplay::DataUpdateTask(void *arg) {
         bool minute_changed = (timeinfo.tm_min != self->last_min_);
         
         // ===== UI 更新（每秒）=====
-        // 🔑 如果正在显示系统信息滚动，跳过整个 UI 更新块（避免锁竞争）
-        if (!self->showing_system_info_) {
+        {
             DisplayLockGuard lock(self);
             
             // 时间跳变保护：NTP 同步后，如果系统 epoch 被外部改了（偏差>2小时），
@@ -209,6 +208,7 @@ void CustomLcdDisplay::DataUpdateTask(void *arg) {
                 if (self->time_label_) lv_label_set_text(self->time_label_, time_buf);
                 if (self->music_time_label_) lv_label_set_text(self->music_time_label_, time_buf);
                 if (self->pomo_time_label_) lv_label_set_text(self->pomo_time_label_, time_buf);
+                if (self->sys_time_label_) lv_label_set_text(self->sys_time_label_, time_buf);
 
                 const char *weeks_en[] = {"SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"};
                 if (self->day_label_) lv_label_set_text(self->day_label_, weeks_en[timeinfo.tm_wday]);
@@ -290,8 +290,7 @@ void CustomLcdDisplay::DataUpdateTask(void *arg) {
         }
 
         // ===== 其他 UI 更新（需要重新获取锁）=====
-        // 🔑 如果正在显示系统信息滚动，跳过 UI 更新（避免锁竞争）
-        if (!self->showing_system_info_) {
+        {
             DisplayLockGuard lock(self);
             static uint32_t last_noncritical_ui_update_ms = 0;
             const bool allow_noncritical_update =
@@ -310,21 +309,26 @@ void CustomLcdDisplay::DataUpdateTask(void *arg) {
                         char buf[32];
                         snprintf(buf, sizeof(buf), "%.1f°C  %.0f%%", sd.temperature, sd.humidity);
                         if (self->sensor_label_) lv_label_set_text(self->sensor_label_, buf);
-                        if (self->music_sensor_label_) lv_label_set_text(self->music_sensor_label_, buf);
                         if (self->pomo_sensor_label_) lv_label_set_text(self->pomo_sensor_label_, buf);
+                        if (self->sys_sensor_label_) lv_label_set_text(self->sys_sensor_label_, buf);
                         self->last_temp_ = sd.temperature;
                         self->last_humi_ = sd.humidity;
                     }
                 }
 
-                // 3. 天气更新（内容变化时才刷新，避免无效重绘）
+                // 3. 天气更新（地点/天气分列，内容变化时才刷新，避免无效重绘）
                 WeatherData wd = WeatherManager::getInstance().getLatestData();
-                if (wd.valid && self->weather_label_) {
-                    char weather_buf[48];
-                    snprintf(weather_buf, sizeof(weather_buf), "%s %s %s°C",
-                             wd.city.c_str(), wd.text.c_str(), wd.temp.c_str());
+                if (wd.valid) {
+                    static std::string last_city_text;
                     static std::string last_weather_text;
-                    if (last_weather_text != weather_buf) {
+                    if (self->city_label_ && last_city_text != wd.city) {
+                        lv_label_set_text(self->city_label_, wd.city.c_str());
+                        last_city_text = wd.city;
+                    }
+                    char weather_buf[48];
+                    snprintf(weather_buf, sizeof(weather_buf), "%s %s°C",
+                             wd.text.c_str(), wd.temp.c_str());
+                    if (self->weather_label_ && last_weather_text != weather_buf) {
                         lv_label_set_text(self->weather_label_, weather_buf);
                         last_weather_text = weather_buf;
                     }
@@ -372,8 +376,8 @@ void CustomLcdDisplay::DataUpdateTask(void *arg) {
                         if (self->pomo_battery_icon_img_) {
                             lv_image_set_src(self->pomo_battery_icon_img_, icon_src);
                         }
-                        if (self->reader_battery_icon_img_) {
-                            lv_image_set_src(self->reader_battery_icon_img_, icon_src);
+                        if (self->sys_battery_icon_img_) {
+                            lv_image_set_src(self->sys_battery_icon_img_, icon_src);
                         }
                         last_icon_mode = icon_mode;
                     }
@@ -384,7 +388,7 @@ void CustomLcdDisplay::DataUpdateTask(void *arg) {
                         lv_label_set_text(self->battery_pct_label_, bat_buf);
                         if (self->music_battery_pct_label_) lv_label_set_text(self->music_battery_pct_label_, bat_buf);
                         if (self->pomo_battery_pct_label_) lv_label_set_text(self->pomo_battery_pct_label_, bat_buf);
-                        if (self->reader_battery_pct_label_) lv_label_set_text(self->reader_battery_pct_label_, bat_buf);
+                        if (self->sys_battery_pct_label_) lv_label_set_text(self->sys_battery_pct_label_, bat_buf);
                         last_battery_level = cached_battery_level;
                     }
 
@@ -424,14 +428,19 @@ void CustomLcdDisplay::DataUpdateTask(void *arg) {
                     if (self->pomo_wifi_icon_img_) {
                         lv_image_set_src(self->pomo_wifi_icon_img_, wifi_src);
                     }
-                    if (self->reader_wifi_icon_img_) {
-                        lv_image_set_src(self->reader_wifi_icon_img_, wifi_src);
+                    if (self->sys_wifi_icon_img_) {
+                        lv_image_set_src(self->sys_wifi_icon_img_, wifi_src);
                     }
                     last_wifi_state = ds;
                 }
+
+                // 6. 系统信息页：数值变化频繁，每次非关键刷新时同步
+                if (self->display_mode_ == MODE_SYSTEM_INFO) {
+                    self->UpdateSystemInfo();
+                }
             }
 
-            // 6. AI 状态更新
+            // 7. 顶栏中央状态图标（AI 对话卡已移除）
             static DeviceState last_ds = kDeviceStateUnknown;
             if (ds != last_ds) {
                 // AI 状态发生变化（对话、聆听等），视为用户活动
@@ -440,63 +449,12 @@ void CustomLcdDisplay::DataUpdateTask(void *arg) {
                     self->NotifyUserActivity();
                 }
 
-                // 更新左侧表情区域（显示当前状态简称）
-                const char* emotion_text = "待命";
-                const char* status_text = "";
-                switch (ds) {
-                    case kDeviceStateConnecting:      emotion_text = "连接"; status_text = "连接中..."; break;
-                    case kDeviceStateListening:       emotion_text = "聆听"; status_text = "聆听中..."; break;
-                    case kDeviceStateSpeaking:        emotion_text = "说话"; break;  // 对话文字由 SetChatMessage 更新
-                    case kDeviceStateStarting:        emotion_text = "启动"; status_text = "启动中..."; break;
-                    case kDeviceStateWifiConfiguring: emotion_text = "配网"; break;   // 详细文案由 Alert() -> SetChatMessage 设置
-                    case kDeviceStateUpgrading:       emotion_text = "升级"; status_text = "升级中..."; break;
-                    case kDeviceStateActivating:      emotion_text = "激活"; break;   // 详细文案由 Alert() -> SetChatMessage 设置
-                    case kDeviceStateFatalError:      emotion_text = "错误"; status_text = "发生错误"; break;
-                    case kDeviceStateIdle:            emotion_text = "待命"; break;   // 空闲时表情由 SetEmotion 管理
-                    default: break;
-                }
-                if (self->emotion_label_) {
-                    lv_label_set_text(self->emotion_label_, emotion_text);
-                }
-                if (self->music_emotion_label_) {
-                    lv_label_set_text(self->music_emotion_label_, emotion_text);
-                }
-                if (self->reader_emotion_label_) {
-                    lv_label_set_text(self->reader_emotion_label_, emotion_text);
-                }
-                // 番茄钟运行中时，番茄钟页面的 AI 卡片不被普通状态变化覆盖
-                // 只在空闲时才让番茄钟页面跟随设备状态
-                auto& pomo_inst = PomodoroManager::getInstance();
-                bool pomo_running = (pomo_inst.getState() != PomodoroManager::IDLE);
+                // 0=待命 1=聆听(含连接) 2=说话
+                int st = 0;
+                if (ds == kDeviceStateListening || ds == kDeviceStateConnecting) st = 1;
+                else if (ds == kDeviceStateSpeaking) st = 2;
+                self->SetChatUiState(st);
 
-                if (!pomo_running && self->pomo_emotion_label_) {
-                    lv_label_set_text(self->pomo_emotion_label_, emotion_text);
-                }
-                // 非说话/配网/激活状态时更新右侧文字（这些状态由 Alert/SetChatMessage 管理详细信息）
-                if (ds != kDeviceStateSpeaking && ds != kDeviceStateWifiConfiguring &&
-                    ds != kDeviceStateActivating && self->chat_status_label_ && strlen(status_text) > 0) {
-                    // 状态短文案（如“聆听中...”）必须强制不滚动，避免继承上一条长文本动画
-                    self->SetShowingSystemInfo(false);
-                    lv_anim_delete(self->chat_status_label_, nullptr);
-                    lv_label_set_long_mode(self->chat_status_label_, LV_LABEL_LONG_WRAP);
-                    lv_obj_align(self->chat_status_label_, LV_ALIGN_LEFT_MID, 64 + 20, 0);
-                    lv_label_set_text(self->chat_status_label_, status_text);
-                }
-                if (ds != kDeviceStateSpeaking && ds != kDeviceStateWifiConfiguring &&
-                    ds != kDeviceStateActivating && self->music_chat_status_label_ && strlen(status_text) > 0) {
-                    lv_label_set_long_mode(self->music_chat_status_label_, LV_LABEL_LONG_WRAP);
-                    lv_label_set_text(self->music_chat_status_label_, status_text);
-                }
-                if (ds != kDeviceStateSpeaking && ds != kDeviceStateWifiConfiguring &&
-                    ds != kDeviceStateActivating && self->reader_chat_status_label_ && strlen(status_text) > 0) {
-                    lv_label_set_long_mode(self->reader_chat_status_label_, LV_LABEL_LONG_WRAP);
-                    lv_label_set_text(self->reader_chat_status_label_, status_text);
-                }
-                if (!pomo_running && ds != kDeviceStateSpeaking && ds != kDeviceStateWifiConfiguring &&
-                    ds != kDeviceStateActivating && self->pomo_chat_status_label_ && strlen(status_text) > 0) {
-                    lv_label_set_long_mode(self->pomo_chat_status_label_, LV_LABEL_LONG_WRAP);
-                    lv_label_set_text(self->pomo_chat_status_label_, status_text);
-                }
                 last_ds = ds;
             }
         }  // DisplayLockGuard 自动释放
@@ -516,9 +474,9 @@ void CustomLcdDisplay::DataUpdateTask(void *arg) {
                 }
 
                 // 状态文字
-                const char* state_text = "倒计时中";
+                const char* state_text = "番茄钟 · 专注中";
                 if (pomo_state == PomodoroManager::PAUSED) {
-                    state_text = "已暂停";
+                    state_text = "番茄钟 · 已暂停";
                 }
 
                 // 设定信息
@@ -532,26 +490,6 @@ void CustomLcdDisplay::DataUpdateTask(void *arg) {
                     progress,
                     info_buf
                 );
-
-                // 番茄钟运行中时，覆盖底部 AI 卡的显示
-                // 只在 AI 不说话时更新（说话时由 SetChatMessage 管理）
-                if (ds != kDeviceStateSpeaking) {
-                    DisplayLockGuard pomo_lock(self);
-                    if (self->pomo_emotion_label_) {
-                        const char* pomo_emoji = (pomo_state == PomodoroManager::PAUSED) ? "暂停" : "专注";
-                        lv_label_set_text(self->pomo_emotion_label_, pomo_emoji);
-                    }
-                    if (self->pomo_chat_status_label_) {
-                        char pomo_status_buf[64];
-                        if (pomo_state == PomodoroManager::PAUSED) {
-                            snprintf(pomo_status_buf, sizeof(pomo_status_buf), "已暂停，说“继续番茄钟”可恢复");
-                        } else {
-                            snprintf(pomo_status_buf, sizeof(pomo_status_buf), "白噪音播放中，专注进行中");
-                        }
-                        lv_label_set_long_mode(self->pomo_chat_status_label_, LV_LABEL_LONG_WRAP);
-                        lv_label_set_text(self->pomo_chat_status_label_, pomo_status_buf);
-                    }
-                }
             }
         }
 

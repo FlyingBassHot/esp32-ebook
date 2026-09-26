@@ -3,16 +3,17 @@
 // 负责：
 // - 构造/析构（初始化 RLCD 驱动 + LVGL + 创建 UI）
 // - LVGL flush 回调（RGB565 → 1-bit 转换）
-// - AI 消息适配（重写小智的 SetChatMessage / SetEmotion / ClearChatMessages）
+// - 顶栏中央「小智」状态图标（AI 卡已移除，状态只用图标表达）
 // - 备忘录功能（加载/刷新备忘录列表）
 // - 基类方法重写（UpdateStatusBar / SetTheme）
 //
 // 其他功能拆分到独立文件：
 //   rlcd_driver.cc        - RLCD 硬件驱动
-//   weather_ui.cc          - 天气站 UI 布局
-//   music_ui.cc            - 音乐页 UI 布局
-//   pomodoro_ui.cc         - 番茄钟 UI 布局
-//   reader_ui.cc           - 阅读页 UI 布局
+//   weather_ui.cc          - 天气页布局（时钟卡/合并卡/照片轮播/书目列表）
+//   music_ui.cc            - 音乐页布局
+//   pomodoro_ui.cc         - 番茄钟布局
+//   reader_ui.cc           - 阅读页布局
+//   system_ui.cc           - 系统信息页布局
 //   data_update_task.cc    - 后台数据更新任务
 //   managers/reader_manager.cc - 电子书（扫描/编码/章节/分页/进度）
 
@@ -34,6 +35,8 @@
 #include "lvgl_theme.h"
 
 static const char *TAG = "CustomDisplay";
+
+LV_FONT_DECLARE(font_puhui_16_4)
 
 // ===== LVGL flush 回调 =====
 
@@ -96,12 +99,13 @@ CustomLcdDisplay::CustomLcdDisplay(esp_lcd_panel_io_handle_t panel_io,
         return;
     }
 
-    // 4. 创建天气页 + 音乐页 + 番茄钟页 + 阅读页 UI
-    ESP_LOGI(TAG, "创建天气页 + 音乐页 + 番茄钟页 + 阅读页 UI");
+    // 4. 创建五页 UI
+    ESP_LOGI(TAG, "创建天气页 + 音乐页 + 番茄钟页 + 阅读页 + 系统信息页 UI");
     SetupWeatherUI();
     SetupMusicUI();
     SetupPomodoroUI();
     SetupReaderUI();
+    SetupSystemUI();
     // 告诉显示框架：当前自定义 UI 已经初始化完成
     // 否则基类的 SetStatus/ShowNotification 会一直误判为“UI 未准备好”
     setup_ui_called_ = true;
@@ -127,55 +131,40 @@ void CustomLcdDisplay::LoadMemoFromNvs() {
 
 // 内部版本：不获取锁（调用者必须已持有 DisplayLock）
 void CustomLcdDisplay::RefreshMemoDisplayInternal() {
-    if (!memo_list_label_) return;
-
     // 从 NVS 读取 JSON 数组
     Settings settings("memo", false);
     std::string json_str = settings.GetString("items", "");
 
-    if (json_str.empty()) {
-        lv_label_set_text(memo_list_label_, "暂无待办");
-        return;
-    }
+    memo_lines_.clear();
+    if (!json_str.empty()) {
+        cJSON *arr = cJSON_Parse(json_str.c_str());
+        if (arr && cJSON_IsArray(arr)) {
+            int count = cJSON_GetArraySize(arr);
+            for (int i = 0; i < count; i++) {
+                cJSON *item = cJSON_GetArrayItem(arr, i);
+                cJSON *t = cJSON_GetObjectItem(item, "t");
+                cJSON *c = cJSON_GetObjectItem(item, "c");
 
-    cJSON *arr = cJSON_Parse(json_str.c_str());
-    if (!arr || !cJSON_IsArray(arr)) {
-        lv_label_set_text(memo_list_label_, "暂无待办");
+                // 格式：[时间] 内容  或  · 内容（无时间时）
+                std::string line;
+                if (t && cJSON_IsString(t) && strlen(t->valuestring) > 0) {
+                    line = t->valuestring;
+                    line += " ";
+                } else {
+                    line = "· ";
+                }
+                if (c && cJSON_IsString(c)) {
+                    line += c->valuestring;
+                }
+                memo_lines_.push_back(line);
+            }
+            ESP_LOGI(TAG, "备忘列表已刷新，共 %d 条", count);
+        }
         if (arr) cJSON_Delete(arr);
-        return;
     }
 
-    // 格式化每条备忘为一行: "时间 内容"
-    // 卡片高度约 90px，16px 字体每行约 18px，最多显示约 5 行
-    std::string display_text;
-    int count = cJSON_GetArraySize(arr);
-    for (int i = 0; i < count && i < 5; i++) {
-        cJSON *item = cJSON_GetArrayItem(arr, i);
-        cJSON *t = cJSON_GetObjectItem(item, "t");
-        cJSON *c = cJSON_GetObjectItem(item, "c");
-
-        if (i > 0) display_text += "\n";
-
-        // 格式：[时间] 内容  或  · 内容（无时间时）
-        if (t && cJSON_IsString(t) && strlen(t->valuestring) > 0) {
-            display_text += t->valuestring;
-            display_text += " ";
-        } else {
-            display_text += "· ";
-        }
-        if (c && cJSON_IsString(c)) {
-            display_text += c->valuestring;
-        }
-    }
-
-    // 如果超过 5 条，提示还有更多
-    if (count > 5) {
-        display_text += "\n...还有" + std::to_string(count - 5) + "条";
-    }
-
-    cJSON_Delete(arr);
-    lv_label_set_text(memo_list_label_, display_text.c_str());
-    ESP_LOGI(TAG, "备忘列表已刷新，共 %d 条", count);
+    memo_view_idx_ = 0;
+    RenderMemoWindow();
 }
 
 // 外部版本：自动获取锁（供 MCP 工具等外部调用）
@@ -184,170 +173,135 @@ void CustomLcdDisplay::RefreshMemoDisplay() {
     RefreshMemoDisplayInternal();
 }
 
-// ===== AI 消息适配（重写小智的方法，只更新左下角卡片）=====
+// ===== AI 显示方法（AI 对话卡已移除，全部改为空实现）=====
 
 void CustomLcdDisplay::SetChatMessage(const char* role, const char* content) {
-    DisplayLockGuard lock(this);
-    if (chat_status_label_ == nullptr && music_chat_status_label_ == nullptr) return;
-    if (!content || strlen(content) == 0) return;
-
-    // 停止可能正在运行的滚动动画（系统信息或之前的 AI 滚动）
-    lv_anim_delete(chat_status_label_, nullptr);
-    
-    // 停止系统信息滚动，恢复 DataUpdateTask 更新
-    SetShowingSystemInfo(false);
-    
-    // 设置文本内容
-    lv_label_set_text(chat_status_label_, content);
-    lv_label_set_long_mode(chat_status_label_, LV_LABEL_LONG_WRAP);
-    
-    // 先恢复居中对齐（正常模式），计算内容高度
-    lv_obj_align(chat_status_label_, LV_ALIGN_LEFT_MID, 64 + 20, 0);
-    
-    // 检查内容是否超出父容器（chat_inner）的可见高度
-    lv_obj_update_layout(chat_status_label_);
-    int label_h = lv_obj_get_height(chat_status_label_);
-    // 从父容器动态获取高度，不硬编码（父容器是 chat_inner）
-    lv_obj_t *parent = lv_obj_get_parent(chat_status_label_);
-    int visible_h = parent ? lv_obj_get_content_height(parent) : 108;
-    
-    if (label_h > visible_h) {
-        // 超长内容：切换到 TOP_LEFT 绝对定位后启用滚动
-        // （和鱼咬尾同理，LEFT_MID 对齐会干扰动画的 set_y）
-        const int text_x = 64 + 20;
-        lv_obj_align(chat_status_label_, LV_ALIGN_TOP_LEFT, text_x, 0);
-        
-        lv_anim_t a;
-        lv_anim_init(&a);
-        lv_anim_set_var(&a, chat_status_label_);
-        lv_anim_set_values(&a, 0, -(label_h - visible_h));  // 从顶部滚到底部
-        lv_anim_set_delay(&a, 1500);  // 开始前停顿 1.5 秒
-        lv_anim_set_duration(&a, (label_h - visible_h) * 50);  // 速度：每像素 50ms
-        lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
-        lv_anim_set_repeat_delay(&a, 2000);  // 滚完后暂停 2 秒再重新开始
-        lv_anim_set_exec_cb(&a, [](void *obj, int32_t v) {
-            lv_obj_set_y((lv_obj_t *)obj, v);
-        });
-        lv_anim_start(&a);
-        
-        ESP_LOGI("CustomLcdDisplay", "AI 回答过长（%dpx > %dpx），启用慢速滚动", label_h, visible_h);
-    }
-
-    // 音乐页同步显示 AI 文案
-    if (music_chat_status_label_) {
-        lv_label_set_long_mode(music_chat_status_label_, LV_LABEL_LONG_WRAP);
-        lv_label_set_text(music_chat_status_label_, content);
-    }
-    // 番茄钟页同步显示 AI 文案
-    if (pomo_chat_status_label_) {
-        lv_label_set_long_mode(pomo_chat_status_label_, LV_LABEL_LONG_WRAP);
-        lv_label_set_text(pomo_chat_status_label_, content);
-    }
-    // 阅读页同步显示 AI 文案
-    if (reader_chat_status_label_) {
-        lv_label_set_long_mode(reader_chat_status_label_, LV_LABEL_LONG_WRAP);
-        lv_label_set_text(reader_chat_status_label_, content);
-    }
+    // AI 回答不再上屏，由顶栏中央状态图标（SetChatUiState）表达交互状态
+    (void)role;
+    (void)content;
 }
 
 void CustomLcdDisplay::SetEmotion(const char* emotion) {
-    DisplayLockGuard lock(this);
-    
-    // 1. 更新左侧文字（完整映射小智所有 21 种表情 + 额外状态）
-    const char* text = "待命";
-    if (strcmp(emotion, "neutral") == 0)         text = "待命";
-    else if (strcmp(emotion, "happy") == 0)      text = "开心";
-    else if (strcmp(emotion, "laughing") == 0)   text = "大笑";
-    else if (strcmp(emotion, "funny") == 0)      text = "搞笑";
-    else if (strcmp(emotion, "sad") == 0)        text = "难过";
-    else if (strcmp(emotion, "angry") == 0)      text = "生气";
-    else if (strcmp(emotion, "crying") == 0)     text = "哭泣";
-    else if (strcmp(emotion, "loving") == 0)     text = "喜爱";
-    else if (strcmp(emotion, "embarrassed") == 0) text = "害羞";
-    else if (strcmp(emotion, "surprised") == 0)  text = "惊讶";
-    else if (strcmp(emotion, "shocked") == 0)    text = "震惊";
-    else if (strcmp(emotion, "thinking") == 0)   text = "思考";
-    else if (strcmp(emotion, "winking") == 0)    text = "眨眼";
-    else if (strcmp(emotion, "cool") == 0)       text = "耍酷";
-    else if (strcmp(emotion, "relaxed") == 0)    text = "放松";
-    else if (strcmp(emotion, "delicious") == 0)  text = "好吃";
-    else if (strcmp(emotion, "kissy") == 0)      text = "亲亲";
-    else if (strcmp(emotion, "confident") == 0)  text = "自信";
-    else if (strcmp(emotion, "sleepy") == 0)     text = "犯困";
-    else if (strcmp(emotion, "silly") == 0)      text = "调皮";
-    else if (strcmp(emotion, "confused") == 0)   text = "困惑";
-    // 额外状态
-    else if (strcmp(emotion, "fear") == 0)       text = "害怕";
-    else if (strcmp(emotion, "disgusted") == 0)  text = "嫌弃";
-    else if (strcmp(emotion, "microchip_ai") == 0) text = "就绪";
-    // 未知情绪也显示中文，不显示英文原文
-    else                                         text = "待命";
-    
-    if (emotion_label_) {
-        lv_label_set_text(emotion_label_, text);
-    }
-    if (music_emotion_label_) {
-        lv_label_set_text(music_emotion_label_, text);
-    }
-    if (pomo_emotion_label_) {
-        lv_label_set_text(pomo_emotion_label_, text);
-    }
-    if (reader_emotion_label_) {
-        lv_label_set_text(reader_emotion_label_, text);
-    }
-    
-    // 2. 尝试加载小智自带的 emoji 图片（天气页 + 音乐页 + 番茄钟页同步更新）
-    if (current_theme_) {
-        auto emoji_collection = static_cast<LvglTheme*>(current_theme_)->emoji_collection();
-        auto image = emoji_collection ? emoji_collection->GetEmojiImage(emotion) : nullptr;
-        bool has_image = (image && !image->IsGif());
-        
-        // 天气页 emoji
-        if (emotion_img_) {
-            if (has_image) {
-                lv_image_set_src(emotion_img_, image->image_dsc());
-                lv_obj_remove_flag(emotion_img_, LV_OBJ_FLAG_HIDDEN);
-            } else {
-                lv_obj_add_flag(emotion_img_, LV_OBJ_FLAG_HIDDEN);
-            }
-        }
-        // 音乐页 emoji（同步显示相同的表情图片）
-        if (music_emotion_img_) {
-            if (has_image) {
-                lv_image_set_src(music_emotion_img_, image->image_dsc());
-                lv_obj_remove_flag(music_emotion_img_, LV_OBJ_FLAG_HIDDEN);
-            } else {
-                lv_obj_add_flag(music_emotion_img_, LV_OBJ_FLAG_HIDDEN);
-            }
-        }
-        // 番茄钟页 emoji
-        if (pomo_emotion_img_) {
-            if (has_image) {
-                lv_image_set_src(pomo_emotion_img_, image->image_dsc());
-                lv_obj_remove_flag(pomo_emotion_img_, LV_OBJ_FLAG_HIDDEN);
-            } else {
-                lv_obj_add_flag(pomo_emotion_img_, LV_OBJ_FLAG_HIDDEN);
-            }
-        }
-        // 阅读页 emoji
-        if (reader_emotion_img_) {
-            if (has_image) {
-                lv_image_set_src(reader_emotion_img_, image->image_dsc());
-                lv_obj_remove_flag(reader_emotion_img_, LV_OBJ_FLAG_HIDDEN);
-            } else {
-                lv_obj_add_flag(reader_emotion_img_, LV_OBJ_FLAG_HIDDEN);
-            }
-        }
-    }
+    // 表情卡已移除
+    (void)emotion;
 }
 
 void CustomLcdDisplay::ClearChatMessages() {
-    DisplayLockGuard lock(this);
-    if (chat_status_label_) lv_label_set_text(chat_status_label_, "");
-    if (music_chat_status_label_) lv_label_set_text(music_chat_status_label_, "");
-    if (pomo_chat_status_label_) lv_label_set_text(pomo_chat_status_label_, "");
-    if (reader_chat_status_label_) lv_label_set_text(reader_chat_status_label_, "");
-    // 表情不清除，保持常驻
+    // 无需清理
+}
+
+// ===== 顶栏中央「小智」+ 状态图标 =====
+
+void CustomLcdDisplay::CreateTopStatus(lv_obj_t *page) {
+    lv_obj_t *name = lv_label_create(page);
+    lv_obj_set_style_text_font(name, &font_puhui_16_4, 0);
+    lv_obj_set_style_text_color(name, lv_color_white(), 0);
+    lv_label_set_text(name, "小智");
+    lv_obj_set_pos(name, 174, 6);
+
+    lv_obj_t *icon = lv_obj_create(page);
+    lv_obj_set_size(icon, 16, 16);
+    lv_obj_set_pos(icon, 210, 8);
+    lv_obj_set_style_bg_opa(icon, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(icon, 0, 0);
+    lv_obj_set_style_pad_all(icon, 0, 0);
+    lv_obj_remove_flag(icon, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_user_data(icon, (void*)(intptr_t)chat_ui_state_);
+    lv_obj_add_event_cb(icon, StatusIconDrawEvent, LV_EVENT_DRAW_MAIN, nullptr);
+    status_icons_.push_back(icon);
+}
+
+// 状态图标绘制（三态：0=待命空心圆 1=聆听脉冲环 2=说话实心+声波）
+void CustomLcdDisplay::StatusIconDrawEvent(lv_event_t *e) {
+    lv_obj_t *obj = (lv_obj_t *)lv_event_get_target(e);
+    lv_layer_t *layer = lv_event_get_layer(e);
+    intptr_t st = (intptr_t)lv_obj_get_user_data(obj);
+
+    lv_area_t coords;
+    lv_obj_get_coords(obj, &coords);
+    int32_t cx = (coords.x1 + coords.x2) / 2;
+    int32_t cy = (coords.y1 + coords.y2) / 2;
+    uint32_t tick = lv_tick_get();
+
+    if (st == 2) {
+        // 说话：实心圆 + 两侧声波交替
+        lv_draw_rect_dsc_t rd;
+        lv_draw_rect_dsc_init(&rd);
+        rd.bg_color = lv_color_white();
+        rd.bg_opa = LV_OPA_COVER;
+        rd.radius = LV_RADIUS_CIRCLE;
+        lv_area_t dot = { cx - 4, cy - 4, cx + 3, cy + 3 };
+        lv_draw_rect(layer, &rd, &dot);
+
+        if ((tick / 300) % 2 == 0) {
+            lv_draw_arc_dsc_t arc;
+            lv_draw_arc_dsc_init(&arc);
+            arc.color = lv_color_white();
+            arc.width = 2;
+            arc.center.x = cx;
+            arc.center.y = cy;
+            arc.radius = 8;
+            arc.start_angle = -40;
+            arc.end_angle = 40;
+            lv_draw_arc(layer, &arc);
+            arc.start_angle = 140;
+            arc.end_angle = 220;
+            lv_draw_arc(layer, &arc);
+        }
+    } else if (st == 1) {
+        // 聆听：内环常亮 + 外环脉冲
+        lv_draw_arc_dsc_t arc;
+        lv_draw_arc_dsc_init(&arc);
+        arc.color = lv_color_white();
+        arc.width = 2;
+        arc.center.x = cx;
+        arc.center.y = cy;
+        arc.start_angle = 0;
+        arc.end_angle = 360;
+        arc.radius = 4;
+        lv_draw_arc(layer, &arc);
+
+        arc.radius = 7;
+        uint32_t phase = (tick / 250) % 4;
+        arc.opa = (phase == 0) ? LV_OPA_COVER : (phase == 1) ? LV_OPA_50 : LV_OPA_20;
+        lv_draw_arc(layer, &arc);
+    } else {
+        // 待命：空心圆
+        lv_draw_arc_dsc_t arc;
+        lv_draw_arc_dsc_init(&arc);
+        arc.color = lv_color_white();
+        arc.width = 2;
+        arc.center.x = cx;
+        arc.center.y = cy;
+        arc.start_angle = 0;
+        arc.end_angle = 360;
+        arc.radius = 6;
+        lv_draw_arc(layer, &arc);
+    }
+}
+
+void CustomLcdDisplay::SetChatUiState(int st) {
+    // 调用者需已持有 DisplayLock
+    if (st == chat_ui_state_) return;
+    chat_ui_state_ = st;
+    for (auto *icon : status_icons_) {
+        if (!icon) continue;
+        lv_obj_set_user_data(icon, (void*)(intptr_t)st);
+        lv_obj_invalidate(icon);
+    }
+    // 回到待命后停止动画定时器
+    if (status_anim_timer_) {
+        if (st == 0) lv_timer_pause(status_anim_timer_);
+        else lv_timer_resume(status_anim_timer_);
+    }
+}
+
+void CustomLcdDisplay::StatusAnimTimerCb(lv_timer_t *t) {
+    auto *self = (CustomLcdDisplay *)lv_timer_get_user_data(t);
+    if (self->chat_ui_state_ == 0) return;
+    for (auto *icon : self->status_icons_) {
+        if (icon) lv_obj_invalidate(icon);
+    }
 }
 
 // ===== 重写状态栏更新（禁用基类的 Font Awesome 文字更新）=====
@@ -356,6 +310,7 @@ void CustomLcdDisplay::UpdateStatusBar(bool update_all) {
     // 不调用基类实现！
     // 基类会尝试用 lv_label_set_text 更新 network_label_ 和 battery_label_，
     // 但那些是隐藏的占位标签。我们自己的图片图标由 DataUpdateTask 管理。
+    (void)update_all;
 }
 
 // ===== 重写主题切换 =====
@@ -364,10 +319,8 @@ void CustomLcdDisplay::SetTheme(Theme* theme) {
     // RLCD 是 1-bit 单色屏，只有黑白两色，不需要主题切换。
     // 基类的 SetTheme 会操作 container_、content_、top_bar_ 等控件，
     // 我们的天气站 UI 没有创建这些，直接跳过避免崩溃。
-    
-    // 但需要保存 theme 指针，SetEmotion 需要用它来加载 emoji 图片
     current_theme_ = theme;
-    ESP_LOGI(TAG, "RLCD 单色屏，跳过主题切换（已保存 theme 指针）");
+    ESP_LOGI(TAG, "RLCD 单色屏，跳过主题切换");
 }
 
 void CustomLcdDisplay::ApplyDisplayMode() {
@@ -376,6 +329,7 @@ void CustomLcdDisplay::ApplyDisplayMode() {
     if (music_page_) lv_obj_add_flag(music_page_, LV_OBJ_FLAG_HIDDEN);
     if (pomodoro_page_) lv_obj_add_flag(pomodoro_page_, LV_OBJ_FLAG_HIDDEN);
     if (reader_page_) lv_obj_add_flag(reader_page_, LV_OBJ_FLAG_HIDDEN);
+    if (system_page_) lv_obj_add_flag(system_page_, LV_OBJ_FLAG_HIDDEN);
 
     // 显示当前页面
     switch (display_mode_) {
@@ -393,17 +347,22 @@ void CustomLcdDisplay::ApplyDisplayMode() {
             // 首次进入阅读页时懒加载书籍（扫描/转码/分页，一次性开销）
             ReaderEnsureLoaded();
             break;
+        case MODE_SYSTEM_INFO:
+            if (system_page_) lv_obj_remove_flag(system_page_, LV_OBJ_FLAG_HIDDEN);
+            UpdateSystemInfo();
+            break;
     }
 }
 
 void CustomLcdDisplay::CycleDisplayMode() {
     DisplayLockGuard lock(this);
-    // 四页循环：天气 → 音乐 → 番茄钟 → 阅读 → 天气
+    // 五页循环：天气 → 音乐 → 番茄钟 → 阅读 → 系统信息 → 天气
     switch (display_mode_) {
-        case MODE_WEATHER:  display_mode_ = MODE_MUSIC; break;
-        case MODE_MUSIC:    display_mode_ = MODE_POMODORO; break;
-        case MODE_POMODORO: display_mode_ = MODE_READER; break;
-        case MODE_READER:   display_mode_ = MODE_WEATHER; break;
+        case MODE_WEATHER:    display_mode_ = MODE_MUSIC; break;
+        case MODE_MUSIC:      display_mode_ = MODE_POMODORO; break;
+        case MODE_POMODORO:   display_mode_ = MODE_READER; break;
+        case MODE_READER:     display_mode_ = MODE_SYSTEM_INFO; break;
+        case MODE_SYSTEM_INFO:display_mode_ = MODE_WEATHER; break;
     }
     ApplyDisplayMode();
     const char* name = "未知";
@@ -412,6 +371,7 @@ void CustomLcdDisplay::CycleDisplayMode() {
         case MODE_MUSIC:    name = "音乐页"; break;
         case MODE_POMODORO: name = "番茄钟"; break;
         case MODE_READER:   name = "阅读页"; break;
+        case MODE_SYSTEM_INFO: name = "系统信息"; break;
     }
     ESP_LOGI(TAG, "页面切换: %s", name);
 }
@@ -535,6 +495,46 @@ void CustomLcdDisplay::UpdatePomodoroDisplay(const char* state_text, const char*
     }
     if (pomo_info_label_ && info_text) {
         lv_label_set_text(pomo_info_label_, info_text);
+    }
+}
+
+// ===== 音量临时胶囊 =====
+
+void CustomLcdDisplay::ShowMusicVolume(int percent) {
+    DisplayLockGuard lock(this);
+    if (!music_volume_chip_ || !music_volume_label_) return;
+    if (percent < 0) percent = 0;
+    if (percent > 100) percent = 100;
+    char buf[24];
+    snprintf(buf, sizeof(buf), "音量 %d%%", percent);
+    lv_label_set_text(music_volume_label_, buf);
+    lv_obj_remove_flag(music_volume_chip_, LV_OBJ_FLAG_HIDDEN);
+    volume_shown_until_ms_ = xTaskGetTickCount() * portTICK_PERIOD_MS + 2000;
+    if (volume_hide_timer_) lv_timer_resume(volume_hide_timer_);
+    ESP_LOGI(TAG, "音量 %d%%", percent);
+}
+
+void CustomLcdDisplay::VolumeHideTimerCb(lv_timer_t *t) {
+    auto *self = (CustomLcdDisplay *)lv_timer_get_user_data(t);
+    if (self->volume_shown_until_ms_ == 0) return;
+    uint32_t now = xTaskGetTickCount() * portTICK_PERIOD_MS;
+    if (now >= self->volume_shown_until_ms_) {
+        if (self->music_volume_chip_ && !lv_obj_has_flag(self->music_volume_chip_, LV_OBJ_FLAG_HIDDEN)) {
+            lv_obj_add_flag(self->music_volume_chip_, LV_OBJ_FLAG_HIDDEN);
+        }
+        self->volume_shown_until_ms_ = 0;
+        lv_timer_pause(t);
+    }
+}
+
+// ===== 系统信息页 =====
+
+void CustomLcdDisplay::SwitchToSystemInfoPage() {
+    DisplayLockGuard lock(this);
+    if (display_mode_ != MODE_SYSTEM_INFO) {
+        display_mode_ = MODE_SYSTEM_INFO;
+        ApplyDisplayMode();
+        ESP_LOGI(TAG, "自动切换到系统信息页");
     }
 }
 
